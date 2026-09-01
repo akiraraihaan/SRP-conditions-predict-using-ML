@@ -1,20 +1,36 @@
 """One training implementation, used identically by all five arms.
 
-Selection criterion: **validation loss on the fold's 10 % slice, computed
-UNWEIGHTED**, i.e. plain cross-entropy with no class weighting, regardless of
-whether the training loss is weighted.
+Selection criterion: **validation macro-F1 on the fold's 10 % slice, with
+UNWEIGHTED validation cross-entropy as the tie-break** when two epochs share the
+same macro-F1.
 
 That combination is deliberate:
 
-* Unweighted, because the ablation compares a weighted-loss arm against an
-  unweighted-loss arm. If the selection criterion followed the training loss,
-  the two arms would be selecting checkpoints against different objectives and
-  the comparison would confound "did weighting help" with "were the two arms
-  even choosing the same kind of checkpoint". A single fixed criterion isolates
-  the weighting effect.
-* Loss rather than macro-F1, because the slice is 54 images and the rarest class
-  contributes 2 of them (artifacts/folds_report.md). Macro-F1 on 2 images moves
-  in steps of 0.5 for that class; loss is continuous and far less noisy.
+* Macro-F1 rather than loss, because loss selection is BIASED, not merely noisy.
+  Validation NLL starts degrading long before validation accuracy does -- the
+  network grows overconfident on a few examples while still getting more of them
+  right (Guo et al. 2017, "On Calibration of Modern Neural Networks"). Selecting
+  on loss therefore stops early on every fold of every arm, and that bias does
+  not average out across the 15 folds, whereas macro-F1's quantisation noise
+  does. Worse, overconfidence drift differs by architecture, so loss selection
+  would penalise the five arms unequally and contaminate the between-architecture
+  comparison that the study turns on. See MIGRATION_NOTES.md section 15 for the
+  measured evidence.
+* Unweighted tie-break, because the ablation compares a weighted-loss arm against
+  an unweighted-loss arm. If the criterion followed the training loss, the two
+  arms would be selecting checkpoints against different objectives and the
+  comparison would confound "did weighting help" with "were the arms even
+  choosing the same kind of checkpoint". A single fixed rule isolates the
+  weighting effect.
+* One fixed rule, identical across all five arms and both ablation arms, and it
+  is the metric that gets reported -- so no reviewer has to ask why selection and
+  reporting disagree.
+
+There is NO early stopping. The full locked epoch budget runs every time:
+`patience` was an unvalidated hyperparameter, it made "50 epochs" not actually
+50 epochs when the budget is itself a locked grid-search output, and it
+interacted with the selection criterion. `stopped_early` is recorded as False
+for provenance.
 
 Class weights on the TRAINING loss are the sklearn "balanced" form,
 w_c = N / (K * n_c), computed from the fold's own training portion only -- never
@@ -138,7 +154,9 @@ class TrainConfig:
     warmup_momentum: float = 0.8
     lrf: float = 0.01                        # final lr as a fraction of lr0
     cos_lr: bool = False
-    patience: int = 20
+    # Early stopping is OFF. 0 means "never stop early"; the full locked epoch
+    # budget runs every time. Do not reintroduce a patience without validating it.
+    patience: int = 0
     num_classes: int = 10
     num_workers: int = 0
     amp: bool = True
@@ -158,7 +176,7 @@ class TrainConfig:
             "optimizer": hyper["optimizer"],
             "class_weights": shared.get("class_weights", "balanced"),
             "image_size": int(shared["image_size"]),
-            "patience": int(shared.get("patience", 20)),
+            "patience": 0,
             "num_classes": int(shared["num_classes"]),
         }
         for key in (
@@ -181,8 +199,12 @@ class TrainConfig:
 class TrainResult:
     best_state: dict
     best_epoch: int
+    best_val_f1: float
     best_val_loss: float
     history: list[dict[str, Any]] = field(default_factory=list)
+    # what a val-loss criterion WOULD have picked, for the record
+    min_val_loss_epoch: int = -1
+    min_val_loss: float = float("inf")
     wall_time_s: float = 0.0
     stopped_early: bool = False
     class_weights: list[float] | None = None
@@ -248,6 +270,7 @@ def train_fold(
     """Train one arm on one fold. Returns the best-by-validation-loss state."""
     import torch
     import torch.nn.functional as F
+    from sklearn.metrics import f1_score
     from torch.utils.data import DataLoader
 
     determinism = set_seed(seed)
@@ -286,11 +309,13 @@ def train_fold(
     scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg.amp and device == "cuda"))
 
     warmup_iters = max(int(cfg.warmup_epochs * len(train_loader)), 1)
+    best_val_f1 = -1.0
     best_val_loss = float("inf")
     best_state: dict = {}
     best_epoch = -1
+    min_val_loss = float("inf")
+    min_val_loss_epoch = -1
     history: list[dict[str, Any]] = []
-    since_improved = 0
     started = time.perf_counter()
     global_step = 0
 
@@ -333,31 +358,48 @@ def train_fold(
 
         train_loss = running / max(seen, 1)
 
-        # --- selection criterion: UNWEIGHTED validation cross-entropy ---
+        # --- selection: validation macro-F1, tie-broken by UNWEIGHTED val loss ---
         module.eval()
         val_loss_sum = 0.0
         val_seen = 0
-        val_correct = 0
+        val_true: list[int] = []
+        val_pred: list[int] = []
         with torch.no_grad():
             for images, targets, _ in val_loader:
                 images = images.to(device, non_blocking=True)
                 targets = targets.to(device, non_blocking=True)
                 logits = module(images)
-                # weight=None on purpose -- see the module docstring
+                # weight=None on purpose -- the tie-break is the UNWEIGHTED loss
                 val_loss_sum += float(F.cross_entropy(logits, targets, reduction="sum"))
-                val_correct += int((logits.argmax(dim=1) == targets).sum())
+                val_pred.extend(logits.argmax(dim=1).cpu().tolist())
+                val_true.extend(targets.cpu().tolist())
                 val_seen += images.size(0)
         val_loss = val_loss_sum / max(val_seen, 1)
-        val_acc = val_correct / max(val_seen, 1)
+        val_f1 = float(
+            f1_score(
+                val_true,
+                val_pred,
+                labels=list(range(cfg.num_classes)),
+                average="macro",
+                zero_division=0,
+            )
+        )
+        val_acc = float(np.mean(np.asarray(val_true) == np.asarray(val_pred)))
 
-        improved = val_loss < best_val_loss - 1e-6
+        # higher macro-F1 wins; equal macro-F1 goes to the lower loss
+        improved = (val_f1 > best_val_f1 + 1e-9) or (
+            abs(val_f1 - best_val_f1) <= 1e-9 and val_loss < best_val_loss - 1e-9
+        )
         if improved:
+            best_val_f1 = val_f1
             best_val_loss = val_loss
             best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
-            since_improved = 0
-        else:
-            since_improved += 1
+
+        # what a val-loss criterion would have chosen -- recorded, never acted on
+        if val_loss < min_val_loss:
+            min_val_loss = val_loss
+            min_val_loss_epoch = epoch
 
         history.append(
             {
@@ -365,28 +407,26 @@ def train_fold(
                 "lr": optimizer.param_groups[0]["lr"],
                 "train_loss": round(train_loss, 6),
                 "val_loss": round(val_loss, 6),
+                "val_f1": round(val_f1, 6),
                 "val_acc": round(val_acc, 6),
                 "best": improved,
             }
         )
         if verbose:
             print(
-                "    epoch %3d/%d  lr %.5f  train_loss %.4f  val_loss %.4f  val_acc %.3f%s"
+                "    epoch %3d/%d  lr %.5f  train_loss %.4f  val_loss %.4f  "
+                "val_f1 %.4f  val_acc %.3f%s"
                 % (
                     epoch + 1,
                     cfg.epochs,
                     optimizer.param_groups[0]["lr"],
                     train_loss,
                     val_loss,
+                    val_f1,
                     val_acc,
                     "  <- best" if improved else "",
                 )
             )
-
-        if cfg.patience and since_improved >= cfg.patience:
-            if verbose:
-                print("    early stop: no val_loss improvement for %d epochs" % cfg.patience)
-            break
 
     if not best_state:  # pathological, but never return an untracked model
         best_state = {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
@@ -396,10 +436,13 @@ def train_fold(
     return TrainResult(
         best_state=best_state,
         best_epoch=best_epoch,
+        best_val_f1=best_val_f1,
         best_val_loss=best_val_loss,
         history=history,
+        min_val_loss_epoch=min_val_loss_epoch,
+        min_val_loss=min_val_loss,
         wall_time_s=round(time.perf_counter() - started, 2),
-        stopped_early=len(history) < cfg.epochs,
+        stopped_early=False,  # early stopping is disabled by design
         class_weights=weights_list,
         determinism=determinism,
         device=device,

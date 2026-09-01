@@ -842,3 +842,90 @@ Seeds are pure functions of `(repeat, fold)` and identical across every arm:
 per-repeat seed was considered and rejected: it would make all five folds within
 a repeat share one initialisation, sampling training stochasticity three times
 instead of fifteen and confounding partition with seed.
+
+---
+
+## 15. Best-weight selection criterion: why it is macro-F1, not loss
+
+Recorded because the criterion was changed once, deliberately, and the reason
+matters more than the choice.
+
+### 15.1 What was tried first
+
+The first implementation selected the best epoch by **validation loss**
+(unweighted cross-entropy on the fold's 10 % slice). The reasoning was that the
+slice is only 54 images and the rarest class, `gas_influence`, contributes 2 of
+them (`artifacts/folds_report.md`), so macro-F1 moves in coarse steps for that
+class while loss is continuous and less noisy.
+
+### 15.2 The evidence that it was wrong
+
+A single smoke run — `yolo26n`, repeat 0 fold 0, the locked configuration
+(50 epochs, batch 16, lr 1e-2) — showed the two criteria disagreeing by 27
+epochs:
+
+| criterion | selected epoch | val macro-F1 | val loss |
+| --- | ---: | ---: | ---: |
+| validation loss (rejected) | 7 | 0.5446 | **1.2384** |
+| validation macro-F1 (adopted) | **34** | **0.6182** | 1.4359 |
+
+Validation loss bottomed out at epoch 7 and rose monotonically thereafter, while
+validation macro-F1 kept climbing to epoch 34. This is the calibration drift
+documented by Guo et al. (2017), *On Calibration of Modern Neural Networks*:
+validation NLL degrades while validation accuracy continues to improve, because
+the network becomes overconfident on a minority of examples faster than it stops
+getting them right. On a 54-image slice, cross-entropy is dominated by those few
+confident errors.
+
+### 15.3 Why that is disqualifying rather than merely unfortunate
+
+The trade was noise for **bias**, and bias is worse here:
+
+1. Macro-F1's quantisation noise averages out over 15 folds. Loss-based
+   under-training does not: it selects an early, under-trained checkpoint on
+   *every* fold of *every* arm, in the same direction each time.
+2. Overconfidence drift rates differ between architectures. Loss selection would
+   therefore penalise the five arms unequally, contaminating the
+   between-architecture comparison — the study's core claim — and not merely the
+   level of the numbers.
+3. Selecting on one metric while reporting another invites an obvious reviewer
+   question for no compensating benefit.
+4. The quantisation concern was overstated. `gas_influence` contributes one tenth
+   of the macro average, so its 2-image granularity shifts the criterion by only
+   about 0.05. The loss tie-break absorbs the residual.
+
+### 15.4 The rule as it now stands
+
+> Select the epoch with the highest **validation macro-F1** on the fold's 10 %
+> slice. Break ties with the lower **unweighted** validation cross-entropy.
+
+Properties that did not change: a single fixed rule, identical across all five
+arms and both ablation arms, computed on the fold's validation slice, and never
+the weighted loss — so the class-weight ablation still compares like with like.
+
+Each registry record keeps the full per-epoch `history` (`val_loss`, `val_f1`,
+`val_acc`, `train_loss`, `lr`), plus `selected_epoch` and — for the record —
+`min_val_loss_epoch`, the epoch a loss criterion would have chosen. The
+distribution of `selected_epoch` across the 75 runs is therefore auditable after
+the fact: if it clusters near the epoch budget, the budget is too short.
+
+### 15.5 Early stopping removed
+
+`patience=20` is gone; the full locked epoch budget now runs every time.
+
+It was an unvalidated hyperparameter, it made "50 epochs" not actually 50 epochs
+when the budget is itself a locked grid-search output, and it interacted with the
+selection criterion (under loss selection the smoke run stopped at epoch 27 of
+50, discarding the region where macro-F1 was still improving). On GPU the compute
+is not the binding constraint. `stopped_early` is recorded as `false` for
+provenance.
+
+### 15.6 An honest note on the smoke run
+
+Under the adopted criterion that run scored **test macro-F1 0.5484**; under the
+rejected one it scored **0.5848**. On this single fold the rejected criterion
+happened to give the better test score.
+
+That is one fold out of fifteen and it settles nothing — the case for macro-F1
+selection is the systematic-bias argument in §15.3, not a per-fold outcome. It is
+recorded here so the comparison is not quietly omitted.

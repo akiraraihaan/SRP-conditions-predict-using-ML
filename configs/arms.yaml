@@ -16,7 +16,8 @@ shared:
   pretrained: true         # full fine-tuning, re-initialised 10-output head
   num_classes: 10
   best_weight_selection: fold_val_slice
-  patience: 20
+  # early stopping removed; see uniform_protocol.early_stopping
+  patience: 0
 
 arms:
   yolo26n:
@@ -85,12 +86,17 @@ arms:
 # replicates the legacy ultralytics protocol so its 8 runs stay comparable with
 # the 46 that already exist.
 #
-# Selection criterion: validation loss on the fold's 10% slice, computed
-# UNWEIGHTED, for every arm including the unweighted ablation arm. Unweighted so
-# the ablation compares like with like; loss rather than macro-F1 because the
-# slice is 54 images and the rarest class contributes 2 of them.
+# Selection criterion: validation MACRO-F1 on the fold's 10% slice, tie-broken by
+# the UNWEIGHTED validation cross-entropy. One fixed rule, identical across all
+# five arms and both ablation arms, and it is the metric that gets reported.
+# Selecting on val loss was tried and rejected: it is biased, not merely noisy,
+# and the bias differs by architecture. See MIGRATION_NOTES.md section 15.
 uniform_protocol:
-  selection_metric: val_loss_unweighted
+  selection_metric: val_f1_macro
+  selection_tiebreak: val_loss_unweighted
+  # No early stopping. The full locked epoch budget runs every time.
+  early_stopping: false
+  patience: 0
   # schedule shape and defaults taken from ultralytics DEFAULT_CFG, so the
   # locked lr values keep the meaning they had when they were selected
   momentum: 0.937

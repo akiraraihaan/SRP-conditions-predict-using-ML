@@ -192,10 +192,11 @@ def main() -> int:
         wall = round(time.perf_counter() - started, 2)
 
         print(
-            "  -> best epoch %d (val_loss %.4f) | test f1_macro %.4f  acc %.4f  | %.1fs on %s"
+            "  -> selected epoch %d/%d (val_f1 %.4f) | test f1_macro %.4f  acc %.4f  | %.1fs on %s"
             % (
                 result.best_epoch + 1,
-                result.best_val_loss,
+                spec["epochs"],
+                result.best_val_f1,
                 metrics["f1_macro"],
                 metrics["accuracy"],
                 wall,
@@ -222,11 +223,17 @@ def main() -> int:
             wall_time_s=wall,
             determinism_status=result.determinism,
             extra={
-                "best_epoch": result.best_epoch,
+                "selected_epoch": result.best_epoch,
+                "best_val_f1": result.best_val_f1,
                 "best_val_loss": result.best_val_loss,
                 "stopped_early": result.stopped_early,
                 "epochs_run": len(result.history),
-                "selection_metric": "val_loss_unweighted",
+                "selection_metric": "val_f1_macro",
+                "selection_tiebreak": "val_loss_unweighted",
+                # what a val-loss criterion WOULD have picked -- recorded, not acted on
+                "min_val_loss_epoch": result.min_val_loss_epoch,
+                "min_val_loss": result.min_val_loss,
+                "history": result.history,
                 "class_weight_values": result.class_weights,
                 "device": result.device,
                 "model_notes": bundle.notes,

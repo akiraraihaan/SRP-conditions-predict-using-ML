@@ -44,7 +44,7 @@ artifacts/        generated. gitignored EXCEPT folds.json and image_index.csv,
 
 | script | what it does | runs |
 | --- | --- | ---: |
-| `00_build_folds.py` | image index, class-name normalisation, count asserts, dev split + its distribution assert, folds.json | — |
+| `00_build_folds.py` | image index, class normalisation, conflict-group exclusion, count asserts, dev split + distribution assert, legacy cross-references, folds.json | — |
 | `01_complete_medium_grid.py` | the 8 medium configurations missing from the old grid, on the dev split; recomputes the medium winner; writes it back to `arms.yaml` | 8 |
 | `02_lr_sweep_baselines.py` | lr ∈ {1e-4, 1e-3, 1e-2} for the two baselines on the dev split; writes winners back to `arms.yaml` | 6 |
 | `03_run_cv.py` | the main experiment: 5 arms × 15 folds | 75 |
@@ -95,6 +95,9 @@ Built in order, verified at each step:
 - [x] (a) repo skeleton + MIGRATION_NOTES.md
 - [x] (b) data loading, class normalisation, image_index.csv, count asserts
 - [x] (c) legacy_split recovery (Route A) + distribution assert + legacy cross-references
-- [ ] (d) folds.json
-- [ ] (e) registry + train + evaluate, smoke test of yolo26n on one fold
-- [ ] (f) remaining scripts
+- [x] (d) folds.json (frozen, corpus-fingerprinted)
+- [x] (e) registry + models + train + evaluate, smoke test of yolo26n on one fold
+- [x] (f) remaining scripts, aggregate, Kaggle runner, docs
+
+Nothing has been run at scale yet: the registry holds a single smoke run. See
+HANDOVER.md for the execution order.

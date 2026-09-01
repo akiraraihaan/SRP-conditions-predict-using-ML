@@ -43,7 +43,7 @@ def require_file(path: Path, produced_by: str = "") -> Path:
     """Return `path`, or raise naming the file and what would have produced it."""
     path = Path(path)
     if not path.exists():
-        hint = f"  Produce it with: {produced_by}" if produced_by else ""
+        hint = ("\n  Produce it with: " + produced_by) if produced_by else ""
         raise MissingInputError(f"Required input not found: {path}{hint}")
     return path
 
