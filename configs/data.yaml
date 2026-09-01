@@ -1,0 +1,49 @@
+# Data contract. Nothing downstream may hardcode a path; everything resolves here.
+#
+# On Kaggle the dataset is RAW and labelled only by directory:
+#   <data_root>/<class_dir>/*.png|*.jpg
+# There is NO pre-existing train/val/test directory structure. All partitioning
+# is done in code from the class directories.
+
+# Default is the Kaggle input mount. Override with the SRPCARD_DATA_ROOT
+# environment variable, or by editing this key, for local / Raspberry Pi runs.
+data_root: /kaggle/input/srp-dynamometer-cards/dataset
+
+# Where generated outputs go. Relative paths resolve against the repo root.
+artifacts_dir: artifacts
+runs_dir: runs
+
+image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"]
+
+# Strip this from every class directory name before use.
+# Source data mixes "10_severe_vibration" with "severe_vibration"; left
+# unnormalised this silently deflated every metric in the old pipeline.
+# See MIGRATION_NOTES.md section 3.
+class_prefix_pattern: '^\d+_'
+
+# Canonical class order. Used for EVERY array, matrix and report.
+classes:
+  - collide_pump_and_vibration
+  - full_load_production
+  - gas_influence
+  - gas_influence_and_vibration
+  - insufficient_liquid_supply_and_vibration
+  - natural_flowing
+  - pump_leakage
+  - severe_insufficient_liquid_supply
+  - severe_vibration
+  - vibration
+
+# Asserted on load. A mismatch is a hard failure, not a warning.
+expected_counts:
+  collide_pump_and_vibration: 35
+  full_load_production: 52
+  gas_influence: 33
+  gas_influence_and_vibration: 70
+  insufficient_liquid_supply_and_vibration: 106
+  natural_flowing: 93
+  pump_leakage: 70
+  severe_insufficient_liquid_supply: 52
+  severe_vibration: 133
+  vibration: 51
+expected_total: 695

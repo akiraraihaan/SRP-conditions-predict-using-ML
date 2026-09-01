@@ -1,0 +1,33 @@
+# Evaluation folds for REPORTING.
+#
+# Built ONCE by scripts/00_build_folds.py into artifacts/folds.json, which is
+# committed and treated as a frozen input. Every arm, every ablation and every
+# baseline consumes that same file so all comparisons are paired.
+# Do not regenerate it.
+
+cv:
+  n_splits: 5
+  n_repeats: 3
+  # random_state passed to sklearn RepeatedStratifiedKFold. 42 is the seed the
+  # legacy pipeline used throughout (MIGRATION_NOTES.md section 1).
+  random_state: 42
+
+# Per-repeat training seed, fed to set_seed() at the start of every run in that
+# repeat and logged into the registry. One entry per repeat; length must equal
+# cv.n_repeats.
+repeat_seeds: [42, 43, 44]
+
+# Stratified validation slice carved out of each fold's TRAINING indices, used
+# only for best-weight selection during training. Never for reporting.
+val_slice:
+  fraction: 0.10
+  random_state: 42
+
+# The legacy 80:10:10 development split. Reconstructed, not re-derived.
+# Selection only (scripts 01 and 02); never a reporting split.
+# See MIGRATION_NOTES.md section 4.
+dev_split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  random_state: 42

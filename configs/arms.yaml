@@ -1,0 +1,126 @@
+# Experiment arms.
+#
+# Hyperparameters are NOT re-searched. The three YOLO arms carry the winners of
+# the completed 46-configuration grid search, selected by argmax of validation
+# macro-F1 (MIGRATION_NOTES.md section 5.1).
+#
+# Two values are written back into this file by scripts, and only by scripts:
+#   - yolo26m.lr / epochs / batch  <- 01_complete_medium_grid.py
+#   - the two baselines' lr        <- 02_lr_sweep_baselines.py
+
+# Shared by every arm. Not overridable per arm.
+shared:
+  image_size: 224          # letterbox to 224x224
+  letterbox: true
+  class_weights: balanced  # sklearn "balanced" on the fold's training portion
+  pretrained: true         # full fine-tuning, re-initialised 10-output head
+  num_classes: 10
+  best_weight_selection: fold_val_slice
+  patience: 20
+
+arms:
+  yolo26n:
+    architecture: yolo26n-cls
+    backend: ultralytics
+    pretrained_fallback: yolo11n-cls.pt
+    optimizer: MuSGD
+    epochs: 50
+    batch: 16
+    lr: 0.01
+    locked: true
+    lr_source: "grid_search:n_ep50_bs16_lr1e-02 (f1_macro_val=0.8364)"
+
+  yolo26s:
+    architecture: yolo26s-cls
+    backend: ultralytics
+    pretrained_fallback: yolo11s-cls.pt
+    optimizer: MuSGD
+    epochs: 50
+    batch: 8
+    lr: 0.01
+    locked: true
+    lr_source: "grid_search:s_ep50_bs8_lr1e-02 (f1_macro_val=0.7257)"
+
+  yolo26m:
+    architecture: yolo26m-cls
+    backend: ultralytics
+    pretrained_fallback: yolo11m-cls.pt
+    optimizer: MuSGD
+    # PROVISIONAL. Argmax over only 10 of 18 grid configurations; the 8 missing
+    # ones are all at 50 epochs (cell 15 of the old notebook is marked "batal"
+    # = cancelled). 01_complete_medium_grid.py runs those 8 and overwrites
+    # epochs/batch/lr here. See MIGRATION_NOTES.md section 5.2.
+    epochs: 25
+    batch: 8
+    lr: 0.01
+    locked: false
+    provisional: true
+    lr_source: "grid_search:m_ep25_bs8_lr1e-02 (f1_macro_val=0.7657, 10/18 grid)"
+
+  mobilenetv3_small:
+    architecture: mobilenet_v3_small
+    backend: torchvision
+    optimizer: SGD
+    epochs: 50
+    batch: 16
+    # TBD. Not recoverable from the old work -- this architecture was never
+    # trained there. 02_lr_sweep_baselines.py determines it. The config loader
+    # refuses to run any arm whose lr is still null.
+    lr: null
+    locked: false
+    lr_source: "TBD:02_lr_sweep"
+
+  resnet18:
+    architecture: resnet18
+    backend: torchvision
+    optimizer: SGD
+    epochs: 50
+    batch: 16
+    lr: null
+    locked: false
+    lr_source: "TBD:02_lr_sweep"
+
+# --- Search spaces, used only by scripts 01 and 02, on the DEVELOPMENT SPLIT ---
+
+medium_grid:
+  # The legacy 2 x 3 x 3 grid. Script 01 runs only the 8 combinations absent
+  # from the old registry, then recomputes the argmax over all 18.
+  epochs: [25, 50]
+  batch: [8, 16, 32]
+  lr: [0.0001, 0.001, 0.01]
+  completed_in_old_registry:
+    - m_ep25_bs8_lr1e-04
+    - m_ep25_bs8_lr1e-03
+    - m_ep25_bs8_lr1e-02
+    - m_ep25_bs16_lr1e-04
+    - m_ep25_bs16_lr1e-03
+    - m_ep25_bs16_lr1e-02
+    - m_ep25_bs32_lr1e-04
+    - m_ep25_bs32_lr1e-03
+    - m_ep25_bs32_lr1e-02
+    - m_ep50_bs8_lr1e-04
+  missing:
+    - m_ep50_bs8_lr1e-03
+    - m_ep50_bs8_lr1e-02
+    - m_ep50_bs16_lr1e-04
+    - m_ep50_bs16_lr1e-03
+    - m_ep50_bs16_lr1e-02
+    - m_ep50_bs32_lr1e-04
+    - m_ep50_bs32_lr1e-03
+    - m_ep50_bs32_lr1e-02
+
+baseline_lr_sweep:
+  arms: [mobilenetv3_small, resnet18]
+  lr: [0.0001, 0.001, 0.01]
+  batch: 16          # fixed, not swept
+  epochs: 50
+
+ablation:
+  arm: yolo26n
+  # Identical to the arm's 03 runs in every respect except this.
+  class_weights: none
+
+learning_curve:
+  arm: yolo26n       # under the FINAL locked config, not the old reference one
+  fractions: [0.2, 0.4, 0.6, 0.8, 1.0]
+  repeats: 3

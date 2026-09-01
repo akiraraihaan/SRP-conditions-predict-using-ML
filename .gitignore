@@ -1,0 +1,41 @@
+# --- Environments ---
+.venv/
+venv/
+ENV/
+env/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Training outputs (never committed) ---
+runs/
+weights/
+*.pt
+*.onnx
+*.tflite
+lc_tmp/
+
+# --- Artifacts: generated, NOT committed ... ---
+artifacts/*
+
+# --- ... except these two, which ARE frozen inputs and MUST be committed ---
+!artifacts/.gitkeep
+!artifacts/folds.json
+!artifacts/image_index.csv
