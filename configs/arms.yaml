@@ -80,6 +80,33 @@ arms:
     locked: false
     lr_source: "TBD:02_lr_sweep"
 
+# --- The uniform training protocol (scripts 02-05) ----------------------
+# One implementation for all five arms. Script 01 does NOT use it: that script
+# replicates the legacy ultralytics protocol so its 8 runs stay comparable with
+# the 46 that already exist.
+#
+# Selection criterion: validation loss on the fold's 10% slice, computed
+# UNWEIGHTED, for every arm including the unweighted ablation arm. Unweighted so
+# the ablation compares like with like; loss rather than macro-F1 because the
+# slice is 54 images and the rarest class contributes 2 of them.
+uniform_protocol:
+  selection_metric: val_loss_unweighted
+  # schedule shape and defaults taken from ultralytics DEFAULT_CFG, so the
+  # locked lr values keep the meaning they had when they were selected
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  lrf: 0.01          # final lr as a fraction of lr0
+  cos_lr: false      # linear decay, matching the ultralytics default
+  amp: true          # on CUDA only; ignored on CPU
+  num_workers: 0
+  # No augmentation. Dynamometer cards are not flip- or rotation-invariant: a
+  # horizontal flip reverses the traversal direction of the load curve. The
+  # transform chain is letterbox -> ImageNet normalise, and nothing else.
+  augmentation: none
+  normalisation: imagenet
+
 # --- Search spaces, used only by scripts 01 and 02, on the DEVELOPMENT SPLIT ---
 
 medium_grid:

@@ -1,0 +1,271 @@
+{
+  "crossref_1_split_contamination": {
+    "n_excluded_total": 27,
+    "by_split": {
+      "train": {
+        "n_partition": 556,
+        "n_excluded": 25,
+        "fraction": 0.045,
+        "images": [
+          {
+            "idx": 64,
+            "class": "full_load_production",
+            "sha1": "9dea713c591449329cdef42600afc0c8ff3ccd28"
+          },
+          {
+            "idx": 103,
+            "class": "gas_influence",
+            "sha1": "70bf43d4b232d37f1f4ab57241eb1e3caf73fd74"
+          },
+          {
+            "idx": 119,
+            "class": "gas_influence",
+            "sha1": "5ff043ea3546230c4169b6cdf1d4904dac538114"
+          },
+          {
+            "idx": 160,
+            "class": "gas_influence_and_vibration",
+            "sha1": "70bf43d4b232d37f1f4ab57241eb1e3caf73fd74"
+          },
+          {
+            "idx": 298,
+            "class": "natural_flowing",
+            "sha1": "ae31473533414f2f3d1244117d4d0741703f8760"
+          },
+          {
+            "idx": 299,
+            "class": "natural_flowing",
+            "sha1": "96c3cfa70782e933bec47afa208a284a902fe2a9"
+          },
+          {
+            "idx": 319,
+            "class": "natural_flowing",
+            "sha1": "2360f2e520da2863e251f46a143058b6b310ca80"
+          },
+          {
+            "idx": 335,
+            "class": "natural_flowing",
+            "sha1": "2615678a91af022ffbfe4238cccecae726d69a25"
+          },
+          {
+            "idx": 351,
+            "class": "natural_flowing",
+            "sha1": "e040de2a4061a8496a3308af9310625fc85ed400"
+          },
+          {
+            "idx": 384,
+            "class": "natural_flowing",
+            "sha1": "85804c6c8e43b4adde2d174ce766eab755598290"
+          },
+          {
+            "idx": 385,
+            "class": "natural_flowing",
+            "sha1": "4d30394f598eeb6127398b19dbac64d54f60b7a3"
+          },
+          {
+            "idx": 386,
+            "class": "natural_flowing",
+            "sha1": "ecedf37912cdcf8d8c1955b2583c79ff23bfe1a4"
+          },
+          {
+            "idx": 439,
+            "class": "pump_leakage",
+            "sha1": "d3d77796110b80812d0921812c454d45aef58264"
+          },
+          {
+            "idx": 454,
+            "class": "pump_leakage",
+            "sha1": "85804c6c8e43b4adde2d174ce766eab755598290"
+          },
+          {
+            "idx": 455,
+            "class": "pump_leakage",
+            "sha1": "176da3a3da95409daf1155677cf096a5262a52de"
+          },
+          {
+            "idx": 456,
+            "class": "pump_leakage",
+            "sha1": "4d30394f598eeb6127398b19dbac64d54f60b7a3"
+          },
+          {
+            "idx": 458,
+            "class": "pump_leakage",
+            "sha1": "ecedf37912cdcf8d8c1955b2583c79ff23bfe1a4"
+          },
+          {
+            "idx": 514,
+            "class": "severe_vibration",
+            "sha1": "ae31473533414f2f3d1244117d4d0741703f8760"
+          },
+          {
+            "idx": 515,
+            "class": "severe_vibration",
+            "sha1": "96c3cfa70782e933bec47afa208a284a902fe2a9"
+          },
+          {
+            "idx": 571,
+            "class": "severe_vibration",
+            "sha1": "2360f2e520da2863e251f46a143058b6b310ca80"
+          },
+          {
+            "idx": 599,
+            "class": "severe_vibration",
+            "sha1": "e040de2a4061a8496a3308af9310625fc85ed400"
+          },
+          {
+            "idx": 669,
+            "class": "vibration",
+            "sha1": "2615678a91af022ffbfe4238cccecae726d69a25"
+          },
+          {
+            "idx": 673,
+            "class": "vibration",
+            "sha1": "70bf43d4b232d37f1f4ab57241eb1e3caf73fd74"
+          },
+          {
+            "idx": 685,
+            "class": "vibration",
+            "sha1": "d3d77796110b80812d0921812c454d45aef58264"
+          },
+          {
+            "idx": 694,
+            "class": "vibration",
+            "sha1": "5ff043ea3546230c4169b6cdf1d4904dac538114"
+          }
+        ]
+      },
+      "val": {
+        "n_partition": 69,
+        "n_excluded": 1,
+        "fraction": 0.0145,
+        "images": [
+          {
+            "idx": 682,
+            "class": "vibration",
+            "sha1": "9dea713c591449329cdef42600afc0c8ff3ccd28"
+          }
+        ]
+      },
+      "test": {
+        "n_partition": 70,
+        "n_excluded": 1,
+        "fraction": 0.0143,
+        "images": [
+          {
+            "idx": 86,
+            "class": "full_load_production",
+            "sha1": "176da3a3da95409daf1155677cf096a5262a52de"
+          }
+        ]
+      }
+    },
+    "leaking_groups": [
+      {
+        "sha1": "176da3a3da95409daf1155677cf096a5262a52de",
+        "members": [
+          {
+            "idx": 86,
+            "class": "full_load_production",
+            "split": "test"
+          },
+          {
+            "idx": 455,
+            "class": "pump_leakage",
+            "split": "train"
+          }
+        ]
+      },
+      {
+        "sha1": "9dea713c591449329cdef42600afc0c8ff3ccd28",
+        "members": [
+          {
+            "idx": 64,
+            "class": "full_load_production",
+            "split": "train"
+          },
+          {
+            "idx": 682,
+            "class": "vibration",
+            "split": "val"
+          }
+        ]
+      }
+    ],
+    "n_leaking_groups": 2,
+    "n_groups_confined_to_train": 11
+  },
+  "crossref_2_confusion_errors": {
+    "manuscript_cells": {
+      "natural_flowing -> pump_leakage": {
+        "n_errors": 3,
+        "idx": [
+          303,
+          318,
+          326
+        ],
+        "n_involving_excluded": 0,
+        "excluded_idx": []
+      },
+      "pump_leakage -> natural_flowing": {
+        "n_errors": 2,
+        "idx": [
+          408,
+          437
+        ],
+        "n_involving_excluded": 0,
+        "excluded_idx": []
+      },
+      "natural_flowing -> severe_vibration": {
+        "n_errors": 1,
+        "idx": [
+          364
+        ],
+        "n_involving_excluded": 0,
+        "excluded_idx": []
+      }
+    },
+    "n_errors_in_those_cells": 6,
+    "n_of_those_involving_excluded": 0,
+    "manuscript_claim_survives": true,
+    "all_contaminated_errors": [
+      {
+        "idx": 86,
+        "true": "full_load_production",
+        "pred": "pump_leakage"
+      }
+    ],
+    "n_errors_total": 21
+  },
+  "crossref_3_friedman_split": {
+    "file": "D:\\skripshi\\FINAL-pipeline\\results\\friedman_within_nano.json",
+    "available": true,
+    "top_level_keys": [
+      "val",
+      "test"
+    ],
+    "effective_split_field_present": false,
+    "effective_split_verbatim": "<<field absent from this file>>",
+    "per_split": {
+      "val": {
+        "chi2": 15.276872964169389,
+        "p_value": 0.009242551902258232,
+        "significant": true,
+        "nemenyi_present": true,
+        "n_blocks": 10,
+        "n_treatments": 6
+      },
+      "test": {
+        "chi2": 9.35126582278482,
+        "p_value": 0.09584729487089337,
+        "significant": false,
+        "nemenyi_present": false,
+        "n_blocks": 10,
+        "n_treatments": 6
+      }
+    },
+    "nemenyi_csv_files_on_disk": [
+      "friedman_within_nano_nemenyi_val.csv"
+    ],
+    "friedman_summary_effective_split_verbatim": "val"
+  }
+}

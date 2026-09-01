@@ -23,6 +23,10 @@ descend_single_wrapper: true
 artifacts_dir: artifacts
 runs_dir: runs
 
+# Where pretrained checkpoints are looked for before falling back to an
+# ultralytics download. Override with SRPCARD_WEIGHTS_DIR.
+weights_dir: weights
+
 image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"]
 
 # Strip this from every class directory name before use.

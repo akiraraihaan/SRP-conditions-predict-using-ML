@@ -35,7 +35,7 @@ lc_tmp/
 # --- Artifacts: generated, NOT committed ... ---
 artifacts/*
 
-# --- ... except these two, which ARE frozen inputs and MUST be committed ---
+# --- ... except these, which are frozen inputs or review artefacts ---
 !artifacts/.gitkeep
 !artifacts/folds.json
 !artifacts/image_index.csv
@@ -45,3 +45,6 @@ artifacts/*
 !artifacts/dev_split.json
 # the audit trail for the 27 excluded images -- small, and quoted in the paper
 !artifacts/excluded_images.csv
+# any artefact that is meant to be REVIEWED must be committed, not merely generated
+!artifacts/folds_report.md
+!artifacts/legacy_contamination.json
