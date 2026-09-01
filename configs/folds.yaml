@@ -8,22 +8,34 @@
 cv:
   n_splits: 5
   n_repeats: 3
-  # random_state passed to sklearn RepeatedStratifiedKFold. 42 is the seed the
-  # legacy pipeline used throughout (MIGRATION_NOTES.md section 1).
-  random_state: 42
 
-# Per-repeat training seed, fed to set_seed() at the start of every run in that
-# repeat and logged into the registry. One entry per repeat; length must equal
-# cv.n_repeats.
-repeat_seeds: [42, 43, 44]
+# --- Seeds ---------------------------------------------------------------
+# run_seed and val_seed are PURE FUNCTIONS of (repeat, fold) and are IDENTICAL
+# across every arm:
+#
+#     run_seed = seeds.run_base + repeat * 100 + fold
+#     val_seed = run_seed + seeds.val_slice_offset
+#
+# yolo26n at (repeat 1, fold 3) uses the same run_seed as resnet18 at
+# (repeat 1, fold 3) and the same as the unweighted ablation arm at
+# (repeat 1, fold 3). That is what makes every comparison paired, and for the
+# ablation it is what isolates the class-weighting effect. The 10% validation
+# slice inside each fold is likewise identical across arms.
+#
+# A per-repeat seed would make all five folds within a repeat share one
+# initialisation -- sampling training stochasticity three times instead of
+# fifteen, and confounding partition with seed. Do not reintroduce one.
+seeds:
+  cv_partition: 42          # RepeatedStratifiedKFold random_state
+  run_base: 10000           # run_seed = run_base + repeat*100 + fold
+  val_slice_offset: 50000   # val_seed = run_seed + val_slice_offset
 
 # Stratified validation slice carved out of each fold's TRAINING indices, used
 # only for best-weight selection during training. Never for reporting.
 val_slice:
   fraction: 0.10
-  random_state: 42
 
-# The legacy 80:10:10 development split. Reconstructed, not re-derived.
+# The legacy 80:10:10 development split. Recovered, not re-derived.
 # Selection only (scripts 01 and 02); never a reporting split.
 # See MIGRATION_NOTES.md section 4.
 dev_split:

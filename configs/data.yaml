@@ -1,13 +1,23 @@
 # Data contract. Nothing downstream may hardcode a path; everything resolves here.
 #
-# On Kaggle the dataset is RAW and labelled only by directory:
+# The dataset is RAW and labelled only by directory:
 #   <data_root>/<class_dir>/*.png|*.jpg
 # There is NO pre-existing train/val/test directory structure. All partitioning
 # is done in code from the class directories.
 
-# Default is the Kaggle input mount. Override with the SRPCARD_DATA_ROOT
-# environment variable, or by editing this key, for local / Raspberry Pi runs.
-data_root: /kaggle/input/srp-dynamometer-cards/dataset
+# Kaggle private dataset
+#   slug  : raihanakirar/srp-dyna-card
+#   mount : /kaggle/input/srp-dyna-card
+# Note the dataset/ wrapper directory inside the mount.
+# Override with the SRPCARD_DATA_ROOT environment variable for local or
+# Raspberry Pi runs.
+data_root: /kaggle/input/srp-dyna-card/dataset
+
+# Safety net: if data_root contains exactly one subdirectory and that
+# subdirectory holds the class directories, descend into it automatically and
+# log that it happened. Covers the case where the mount point is given without
+# the wrapper, or where Kaggle adds one.
+descend_single_wrapper: true
 
 # Where generated outputs go. Relative paths resolve against the repo root.
 artifacts_dir: artifacts
@@ -16,8 +26,12 @@ runs_dir: runs
 image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"]
 
 # Strip this from every class directory name before use.
-# Source data mixes "10_severe_vibration" with "severe_vibration"; left
-# unnormalised this silently deflated every metric in the old pipeline.
+# The uploaded Kaggle copy has ALREADY been cleaned to 10 directories with no
+# numeric prefixes, so this normaliser is expected to be a no-op there. It is
+# kept as a defensive guard: the old data in ../FINAL-pipeline had 14
+# directories because four classes were duplicated under a prefix
+# (10_severe_vibration, 12_full_load_production, 29_natural_flowing,
+# 30_pump_leakage), and left unnormalised that silently deflated every metric.
 # See MIGRATION_NOTES.md section 3.
 class_prefix_pattern: '^\d+_'
 
