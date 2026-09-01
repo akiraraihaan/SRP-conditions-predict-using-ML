@@ -39,3 +39,9 @@ artifacts/*
 !artifacts/.gitkeep
 !artifacts/folds.json
 !artifacts/image_index.csv
+# dev_split.json is committed too: it is recovered by Route A from the legacy
+# reference directory, which does not exist on Kaggle, so scripts 01 and 02
+# could not otherwise run there. See MIGRATION_NOTES.md section 13.4.
+!artifacts/dev_split.json
+# the audit trail for the 27 excluded images -- small, and quoted in the paper
+!artifacts/excluded_images.csv

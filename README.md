@@ -93,8 +93,8 @@ Kaggle Dataset and wiring `DATA_ROOT` to it.
 Built in order, verified at each step:
 
 - [x] (a) repo skeleton + MIGRATION_NOTES.md
-- [ ] (b) data loading, class normalisation, image_index.csv, count asserts
-- [ ] (c) legacy_split reconstruction + distribution assert
+- [x] (b) data loading, class normalisation, image_index.csv, count asserts
+- [x] (c) legacy_split recovery (Route A) + distribution assert + legacy cross-references
 - [ ] (d) folds.json
 - [ ] (e) registry + train + evaluate, smoke test of yolo26n on one fold
 - [ ] (f) remaining scripts

@@ -260,6 +260,11 @@ Both reproduce the target table exactly. `legacy_split.py` therefore uses the
 **canonical normalised** names, and this equivalence is recorded here so the choice
 is not silently load-bearing.
 
+> **Superseded in part by §13.4.** The replay described above is Route B. It
+> reproduces the count table but places 225 of 695 images in different partitions
+> from the split the old run actually used. The recovery that ships is Route A,
+> which reads the materialised directories. Read §13.4 before relying on §4.2.
+
 ### 4.3 Independent ground truth
 
 The reconstruction is checked twice: against the table in the brief, and against the
@@ -522,3 +527,318 @@ and the loader refuses to run any arm whose `lr` is still `null`. They are not f
 with a placeholder number.
 
 No other required input was missing. Nothing in this document is estimated.
+
+---
+
+## 12. Duplicate-label conflict groups: discovery, rule and exclusion
+
+This section is written to be quoted in the manuscript.
+
+### 12.1 Discovery
+
+The new image index stores a SHA-1 content hash for every file, added so the
+legacy split could be matched across the directory renaming (§13.4). Hashing the
+695 images immediately exposed something the old pipeline never checked:
+**13 groups of byte-identical files, each carrying more than one class label.**
+
+The check is a two-line group-by, and it had never been run. Nothing in
+`OLD_DIR/code.ipynb` hashes, compares or de-duplicates the images.
+
+### 12.2 The 13 groups
+
+Every group is listed in full. `idx` refers to the 695-row
+`artifacts/image_index.csv`; the complete record, with file size and pixel
+dimensions, is in `artifacts/excluded_images.csv`.
+
+| sha1 (first 12) | n | idx | classes the same bytes are filed under |
+| --- | ---: | --- | --- |
+| `176da3a3da95` | 2 | 86, 455 | full_load_production / pump_leakage |
+| `2360f2e520da` | 2 | 319, 571 | natural_flowing / severe_vibration |
+| `2615678a91af` | 2 | 335, 669 | natural_flowing / vibration |
+| `4d30394f598e` | 2 | 385, 456 | natural_flowing / pump_leakage |
+| `5ff043ea3546` | 2 | 119, 694 | gas_influence / vibration |
+| `70bf43d4b232` | **3** | 103, 160, 673 | gas_influence / gas_influence_and_vibration / vibration |
+| `85804c6c8e43` | 2 | 384, 454 | natural_flowing / pump_leakage |
+| `96c3cfa70782` | 2 | 299, 515 | natural_flowing / severe_vibration |
+| `9dea713c5914` | 2 | 64, 682 | full_load_production / vibration |
+| `ae3147353341` | 2 | 298, 514 | natural_flowing / severe_vibration |
+| `d3d77796110b` | 2 | 439, 685 | pump_leakage / vibration |
+| `e040de2a4061` | 2 | 351, 599 | natural_flowing / severe_vibration |
+| `ecedf37912cd` | 2 | 386, 458 | natural_flowing / pump_leakage |
+
+Two facts about this table:
+
+- **All 13 groups are cross-class. Zero are within-class.** Benign duplication --
+  the same card filed twice under one label -- does not occur at all.
+- **All 13 groups share ONE filename across their differing classes.** For
+  example `Screenshot 2026-05-05 140627.png` exists under both
+  `natural_flowing/` and `pump_leakage/`, byte for byte.
+
+The second fact is the diagnostic one. Two annotators disagreeing about an
+ambiguous card would produce two *differently named* files, or one file with a
+contested label. One filename, one byte sequence, two directories is the
+signature of a **curation copy error** -- a file copied into a second class
+directory during dataset assembly -- not of genuine expert disagreement about the
+physics.
+
+`natural_flowing` is involved in 8 of the 13 groups, more than any other class.
+
+### 12.3 The exclusion rule
+
+> Group the image index by SHA-1. A group whose members span more than one
+> normalised class is a **conflict group**, and **every member of it is
+> excluded** -- not merely the extra copies. A group that is byte-identical
+> within a single class is benign duplication and is retained.
+
+The rule keeps or drops the whole group rather than keeping one member, because
+keeping either member requires deciding which label is correct. Without expert
+adjudication that decision cannot be made, and getting it wrong plants a
+confidently wrong label in the training data. Dropping the group is mechanical,
+requires no judgement, and is auditable from the hash alone.
+
+Implemented in `src/srpcard/data.py:annotate_conflicts`; asserted against
+`configs/data.yaml:clean_corpus` by `src/srpcard/data.py:assert_clean_counts`.
+
+**No expert adjudication was performed.** No domain expert was consulted about
+which label is correct for any of the 27 files. The exclusion is a mechanical
+consequence of the hash, and it is deliberately conservative: it discards
+information rather than inventing a label.
+
+### 12.4 Before / drop / after
+
+| class | before | drop | after |
+| --- | ---: | ---: | ---: |
+| collide_pump_and_vibration | 35 | 0 | 35 |
+| full_load_production | 52 | 2 | 50 |
+| gas_influence | 33 | 2 | 31 |
+| gas_influence_and_vibration | 70 | 1 | 69 |
+| insufficient_liquid_supply_and_vibration | 106 | 0 | 106 |
+| natural_flowing | 93 | 8 | 85 |
+| pump_leakage | 70 | 5 | 65 |
+| severe_insufficient_liquid_supply | 52 | 0 | 52 |
+| severe_vibration | 133 | 4 | 129 |
+| vibration | 51 | 5 | 46 |
+| **TOTAL** | **695** | **27** | **668** |
+
+13 conflict groups, 27 files, 3.9 % of the corpus. Imbalance ratio after
+exclusion: **129 / 31 = 4.16:1** (before: 133 / 33 = 4.03:1).
+
+### 12.5 Two-track corpus
+
+The exclusion is applied to one track and deliberately not to the other.
+
+| | corpus | labels | used by | role |
+| --- | --- | --- | --- | --- |
+| **Development split** | raw **695** | original, contaminated | scripts 01, 02 | hyperparameter selection only |
+| **CV folds** | clean **668** | conflict groups removed | scripts 03, 04, 05 | all reporting |
+
+The development split is *not* cleaned, and that is intentional. Its only
+function is comparability with the 46 grid-search configurations that are already
+complete. Those runs were trained and evaluated on the contaminated corpus and
+cannot be retro-fixed without re-running them, which the revision forbids.
+Cleaning the development split would make the 8 medium configurations completed
+by script 01 incommensurable with the 10 that already exist, defeating the
+purpose of completing that grid at all.
+
+Correctness matters in the reporting protocol, and that is where the clean corpus
+is used. `artifacts/dev_split.json` indexes into the 695;
+`artifacts/folds.json` indexes into the 668. Both use the same `idx` space --
+positions in the single 695-row `artifacts/image_index.csv` -- so the two views
+never diverge into two competing index files. Membership is carried by the
+`conflict_group` and `excluded` columns of that one file.
+
+### 12.6 Effect on the fold protocol
+
+After exclusion no SHA-1 is shared across classes, so plain
+`RepeatedStratifiedKFold` is valid. Phase 3 asserts this anyway: no hash may
+appear on both the train and test side of any fold. Should a benign within-class
+group ever appear and straddle a boundary, the protocol switches to
+`StratifiedGroupKFold` keyed on SHA-1.
+
+---
+
+## 13. Cross-references against the old results
+
+Computed by `scripts/00_build_folds.py` phase 2b (`src/srpcard/legacy_audit.py`),
+recorded in `artifacts/legacy_contamination.json`. Cross-reference 2 required
+re-running **inference only**, with the already-trained selected weights; no
+grid-search configuration was re-trained, and nothing was written to OLD_DIR.
+
+### 13.1 How much of the reported test F1-macro was contaminated
+
+Where the 27 excluded images fell in the legacy development split:
+
+| partition | n | excluded | share |
+| --- | ---: | ---: | ---: |
+| train | 556 | 25 | 4.5 % |
+| val | 69 | **1** | 1.5 % |
+| test | 70 | **1** | 1.4 % |
+
+11 of the 13 conflict groups sit **entirely inside the training partition** --
+label noise during training, but not leakage. Only **2 groups straddle a
+partition boundary**:
+
+- `176da3a3da95` -- `full_load_production` (**idx 86, test**) and `pump_leakage`
+  (idx 455, train)
+- `9dea713c5914` -- `full_load_production` (idx 64, train) and `vibration`
+  (**idx 682, val**)
+
+So the reported test macro-F1 of **0.6979** rests on 70 images of which exactly
+**one** is contaminated. Recomputing the metric with that image removed:
+
+| | n | accuracy | F1-macro |
+| --- | ---: | ---: | ---: |
+| as published | 70 | 0.7000 | **0.6979** |
+| minus the one contaminated image | 69 | 0.7101 | **0.7120** |
+
+Difference **+0.0141**. The contamination *understated* the published figure
+rather than inflating it. The reported number is not overstated, and the headline
+claim is not at risk from this.
+
+A note on the recomputation: running the stored selected weights over the
+recovered test partition reproduces accuracy 0.7000 and F1-macro 0.6979 -- the
+published values -- exactly. That is an independent end-to-end confirmation of
+the split reconstruction (§13.4), of the 10x10 collapse, and of the published
+metric itself.
+
+### 13.2 Are the "inter-class similarity" errors actually contamination?
+
+The manuscript attributes a specific set of off-diagonal confusion-matrix cells
+to inter-class visual similarity. Collapsing the selected model's matrix to 10x10
+canonical order and identifying every misclassified image:
+
+| cell | errors | involving an excluded image |
+| --- | ---: | ---: |
+| natural_flowing -> pump_leakage | 3 (idx 303, 318, 326) | **0** |
+| pump_leakage -> natural_flowing | 2 (idx 408, 437) | **0** |
+| natural_flowing -> severe_vibration | 1 (idx 364) | **0** |
+| **total** | **6** | **0** |
+
+**The manuscript's explanation survives.** None of those six errors involves a
+contaminated image. They are genuine confusions between visually similar classes,
+and the paragraph attributing them to inter-class similarity stands as written.
+
+This is a positive finding rather than an absence of evidence: all eight excluded
+`natural_flowing` images and all five excluded `pump_leakage` images sit in the
+training partition, so none of them *could* have produced a test-set error.
+
+Exactly one of the model's 21 test errors involves an excluded image, and it
+falls in a different cell:
+
+> **idx 86**, true `full_load_production`, predicted **`pump_leakage`**.
+
+Its byte-identical twin, idx 455, is labelled `pump_leakage` and sits in the
+training set. The model was trained on those exact pixels under the label
+`pump_leakage` and then reproduced that label at test time. This single error is
+fully explained by contamination and not by visual similarity -- the one place
+where the similarity narrative does not apply.
+
+### 13.3 Which split did the within-nano Friedman test run on?
+
+Reported verbatim, as requested.
+
+`OLD_DIR/results/friedman_within_nano.json` **has no `effective_split` field at
+all.** Its top-level keys are `["val", "test"]` -- the test was computed on both
+partitions and both results were stored:
+
+| block | chi2 | p | significant | Nemenyi stored |
+| --- | ---: | ---: | --- | --- |
+| `val` | 15.2769 | **0.0092** | **true** | **yes** |
+| `test` | 9.3513 | 0.0958 | false | no (`null`) |
+
+The only post-hoc file on disk is `friedman_within_nano_nemenyi_val.csv`. There
+is no `..._test.csv`, because cell 21 runs the Nemenyi post-hoc only when the
+omnibus is significant, and only the **val** block was.
+
+Therefore: **the significant within-nano result and its Nemenyi post-hoc come
+from the validation partition, not the test partition.** If the manuscript states
+that this test ran on the test partition specifically to avoid circularity, that
+statement is not supported by the stored artefacts. On the test partition the
+omnibus is *not* significant (p = 0.0958).
+
+The circularity concern is concrete rather than theoretical: the winning
+configuration was itself selected by argmax of validation macro-F1 (§5.1), so the
+significant val-based ranking is computed on the very partition that chose the
+winner.
+
+For contrast, the sibling file `friedman_summary.json` -- the across-variant test
+-- *does* carry the field, and it reads `"effective_split": "val"`.
+
+**This paragraph of the manuscript needs revision.** Unlike §13.2, it is not
+rescued by the evidence.
+
+### 13.4 Recovery of the development split: which route worked
+
+Three routes were attempted in the order specified.
+
+**Route A succeeded**, and is the route used. The old run materialised its split
+as directory trees under `OLD_DIR/yolo_dataset/{train,val,test}/<class>/`, whose
+directory names preserve the pre-rename state -- including the four prefixed
+names `10_severe_vibration`, `12_full_load_production`, `29_natural_flowing`,
+`30_pump_leakage`.
+
+Matching was by SHA-1 first, filename second:
+
+- **0 of 695 matched by SHA-1.** The materialised files are letterboxed
+  re-encodings, so their bytes differ from the raw originals. This was expected.
+- **695 of 695 matched by filename**, scoped to the normalised class. Zero
+  unmatched, zero ambiguous, zero double-assigned, zero index rows left
+  unassigned -- a bijection.
+
+Filename matching is unambiguous because filenames are unique *within* a class.
+They are not globally unique -- the 27 conflict-group files are precisely the
+cases where one filename appears under several classes -- which is why the match
+is scoped by class rather than by filename alone.
+
+**Route B was also executed, for comparison.** Replaying the two original
+`train_test_split` calls reproduces the required count table exactly, so on the
+counts alone it looks like a success. It is not:
+
+> **Route A and Route B agree on only 470 of 695 images (67.6 %).**
+
+They place 225 images in different partitions while producing identical per-class
+counts. The count table cannot distinguish a correct reconstruction from an
+incorrect one, because stratified allocation depends only on class counts and
+`random_state`, never on row order -- and the old row order came from an
+OS-dependent `rglob` over 14 directory names that no longer exist. Had Route A
+been unavailable, Route B would have passed the mandated assert while silently
+reconstructing the wrong split.
+
+Route C was not reached.
+
+The recovered split is written to `artifacts/dev_split.json` together with the
+full recovery report. Because OLD_DIR does not exist on Kaggle, Route A cannot
+run there, so `artifacts/dev_split.json` is **committed** alongside `folds.json`
+and `image_index.csv` -- a deliberate departure from the brief's list of
+committed artefacts, without which scripts 01 and 02 could not run on Kaggle at
+all.
+
+---
+
+## 14. Additional modules beyond the brief's list
+
+Items that exist but that the brief's target structure does not name. Each is
+listed here rather than passed off silently.
+
+| item | why |
+| --- | --- |
+| `src/srpcard/config.py` | Section 7 requires one `set_seed` helper and one place that resolves every path. Neither belongs in `data.py`, `folds.py` or `train.py`. Also holds provenance capture (git commit, installed versions). |
+| `src/srpcard/legacy_audit.py` | Makes the §13 cross-references reproducible rather than ad hoc. Read-only with respect to OLD_DIR. |
+| `configs/data.yaml: clean_corpus` | The clean-corpus contract of §12. |
+| `configs/data.yaml: legacy_reference` | The read-only path to OLD_DIR and the artefacts read from it. |
+| `artifacts/excluded_images.csv` | Full record of the 27 excluded files. |
+| `artifacts/legacy_contamination.json` | The §13 cross-reference results. |
+| `artifacts/legacy_test_predictions.csv` | Per-image predictions behind §13.2. |
+| `artifacts/dev_split.json` **committed** | Route A cannot run on Kaggle (§13.4). |
+
+`set_seed` additionally forces `torch.backends.cudnn.deterministic = True` and
+`torch.backends.cudnn.benchmark = False`; benchmark mode selects convolution
+algorithms by timing them, which is nondeterministic. The ~10-15 % slowdown is
+accepted. Ultralytics may not honour `torch.use_deterministic_algorithms`, so the
+achieved status is recorded into the registry rather than hard-failing.
+
+Seeds are pure functions of `(repeat, fold)` and identical across every arm:
+`run_seed = 10000 + repeat*100 + fold`, `val_seed = run_seed + 50000`. A
+per-repeat seed was considered and rejected: it would make all five folds within
+a repeat share one initialisation, sampling training stochasticity three times
+instead of fifteen and confounding partition with seed.

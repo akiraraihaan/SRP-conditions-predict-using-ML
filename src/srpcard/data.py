@@ -29,7 +29,18 @@ import pandas as pd
 
 from .config import MissingInputError, artifacts_dir, load_data_config, require_file, resolve_data_root
 
-IMAGE_INDEX_COLUMNS = ["idx", "relpath", "class", "sha1"]
+IMAGE_INDEX_COLUMNS = ["idx", "relpath", "class", "sha1", "conflict_group", "excluded"]
+
+EXCLUDED_COLUMNS = [
+    "sha1",
+    "idx",
+    "relpath",
+    "class",
+    "filename",
+    "file_size_bytes",
+    "width",
+    "height",
+]
 
 
 # --------------------------------------------------------------------------
@@ -169,17 +180,157 @@ def build_image_index(
             f"No images with extensions {sorted(extensions)} found under {data_root}"
         )
 
-    index = pd.DataFrame(rows, columns=IMAGE_INDEX_COLUMNS)
+    index = pd.DataFrame(rows, columns=["idx", "relpath", "class", "sha1"])
+    return annotate_conflicts(index, verbose=verbose)
 
-    duplicates = index[index.duplicated("sha1", keep=False)]
-    if not duplicates.empty:
-        groups = duplicates.groupby("sha1")["relpath"].apply(list)
-        print(f"[index] WARNING: {len(groups)} sha1 collision(s) -- byte-identical images:")
-        for sha, paths in list(groups.items())[:10]:
-            print(f"          {sha[:12]}: {paths}")
-        print("        Filename fallback is used for these when matching the legacy split.")
 
-    return index
+# --------------------------------------------------------------------------
+# conflict groups -- the clean corpus
+# --------------------------------------------------------------------------
+
+
+def annotate_conflicts(index: pd.DataFrame, *, verbose: bool = True) -> pd.DataFrame:
+    """Add `conflict_group` and `excluded` to the index.
+
+    Group by sha1. A group whose members span more than one normalised class is a
+    CONFLICT group: byte-identical files carrying contradictory labels. Every
+    member is excluded, not just the extras -- without expert adjudication we
+    cannot know which label is right, so keeping either member risks planting a
+    wrong one. Dropping the whole group is mechanical and needs no judgement.
+
+    A group byte-identical WITHIN a single class is benign duplication and is NOT
+    excluded; its count is reported.
+
+    One index file, two membership views. Never two index files.
+    """
+    index = index.copy()
+    index["conflict_group"] = ""
+    index["excluded"] = False
+
+    classes_per_sha = index.groupby("sha1")["class"].nunique()
+    rows_per_sha = index.groupby("sha1").size()
+
+    conflict_shas = sorted(classes_per_sha[classes_per_sha > 1].index)
+    benign_shas = sorted(rows_per_sha[(rows_per_sha > 1) & (classes_per_sha == 1)].index)
+
+    is_conflict = index["sha1"].isin(conflict_shas)
+    index.loc[is_conflict, "conflict_group"] = index.loc[is_conflict, "sha1"]
+    index.loc[is_conflict, "excluded"] = True
+
+    if verbose:
+        print(
+            f"[conflicts] {len(conflict_shas)} conflict group(s) spanning >1 class "
+            f"-> {int(is_conflict.sum())} file(s) excluded"
+        )
+        print(f"[conflicts] {len(benign_shas)} benign within-class duplicate group(s) -> kept")
+        if conflict_shas:
+            same_name = 0
+            for sha in conflict_shas:
+                members = index[index["sha1"] == sha]
+                names = {Path(p).name for p in members["relpath"]}
+                same_name += int(len(names) == 1)
+                print(
+                    f"              {sha[:12]}  n={len(members)}  "
+                    f"same_filename={len(names) == 1}  "
+                    f"classes={sorted(members['class'].tolist())}"
+                )
+            print(
+                f"[conflicts] {same_name}/{len(conflict_shas)} group(s) share ONE filename "
+                f"across their classes -- a curation copy error, not disagreement "
+                f"over an ambiguous card"
+            )
+
+    return index[IMAGE_INDEX_COLUMNS]
+
+
+def clean_index(index: pd.DataFrame) -> pd.DataFrame:
+    """The reporting corpus: the index minus every conflict-group member.
+
+    `idx` values are preserved, NOT renumbered -- they remain positions in the
+    695-row index, so dev_split.json (which indexes the 695) and folds.json
+    (which indexes the 668) speak the same identifier space.
+    """
+    return index.loc[~index["excluded"].astype(bool)].copy()
+
+
+def assert_clean_counts(index: pd.DataFrame, cfg: dict[str, Any] | None = None) -> None:
+    """Assert the conflict-group, exclusion and clean per-class counts.
+
+    Fails with a before / drop / after diff.
+    """
+    cfg = cfg or load_data_config()
+    spec = cfg["clean_corpus"]
+    canonical = list(cfg["classes"])
+
+    n_groups = int(index.loc[index["excluded"].astype(bool), "conflict_group"].nunique())
+    n_excluded = int(index["excluded"].astype(bool).sum())
+    clean = clean_index(index)
+
+    before = index["class"].value_counts().to_dict()
+    after = clean["class"].value_counts().to_dict()
+    expected_after: dict[str, int] = dict(spec["expected_counts"])
+
+    problems: list[str] = []
+    if n_groups != int(spec["expected_conflict_groups"]):
+        problems.append(
+            f"conflict groups: expected {spec['expected_conflict_groups']}, got {n_groups}"
+        )
+    if n_excluded != int(spec["expected_excluded"]):
+        problems.append(f"excluded files: expected {spec['expected_excluded']}, got {n_excluded}")
+    if len(clean) != int(spec["expected_total"]):
+        problems.append(f"clean total: expected {spec['expected_total']}, got {len(clean)}")
+
+    per_class_bad = [
+        name
+        for name in canonical
+        if int(after.get(name, 0)) != int(expected_after[name])
+    ]
+    if per_class_bad:
+        problems.append(f"per-class clean counts differ for: {per_class_bad}")
+
+    if problems:
+        lines = ["Clean-corpus counts do not match configs/data.yaml:clean_corpus."]
+        lines += [f"  - {p}" for p in problems]
+        lines.append(f"  {'class':<45s} {'before':>6s} {'drop':>5s} {'after':>6s} {'expect':>7s}")
+        for name in canonical:
+            b = int(before.get(name, 0))
+            a = int(after.get(name, 0))
+            e = int(expected_after[name])
+            flag = "" if a == e else "   <-- MISMATCH"
+            lines.append(f"  {name:<45s} {b:>6d} {b - a:>5d} {a:>6d} {e:>7d}{flag}")
+        lines.append(
+            f"  {'TOTAL':<45s} {len(index):>6d} {n_excluded:>5d} {len(clean):>6d} "
+            f"{int(spec['expected_total']):>7d}"
+        )
+        raise ValueError("\n".join(lines))
+
+
+def excluded_table(index: pd.DataFrame, data_root: Path) -> pd.DataFrame:
+    """Full record of every excluded file, with size and pixel dimensions."""
+    from PIL import Image
+
+    rows = []
+    excluded = index.loc[index["excluded"].astype(bool)]
+    for _, row in excluded.sort_values(["sha1", "idx"]).iterrows():
+        path = Path(data_root) / row["relpath"]
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+        except Exception:  # noqa: BLE001 - reported as empty, never fatal
+            width = height = None
+        rows.append(
+            {
+                "sha1": row["sha1"],
+                "idx": int(row["idx"]),
+                "relpath": row["relpath"],
+                "class": row["class"],
+                "filename": Path(row["relpath"]).name,
+                "file_size_bytes": path.stat().st_size if path.exists() else None,
+                "width": width,
+                "height": height,
+            }
+        )
+    return pd.DataFrame(rows, columns=EXCLUDED_COLUMNS)
 
 
 def assert_counts(index: pd.DataFrame, cfg: dict[str, Any] | None = None) -> None:
@@ -221,10 +372,20 @@ def load_image_index(path: Path | None = None) -> pd.DataFrame:
     """Read artifacts/image_index.csv, failing by name if it is absent."""
     path = Path(path) if path is not None else artifacts_dir() / "image_index.csv"
     require_file(path, produced_by="python scripts/00_build_folds.py")
-    index = pd.read_csv(path, dtype={"idx": int, "relpath": str, "class": str, "sha1": str})
+    index = pd.read_csv(
+        path,
+        dtype={"idx": int, "relpath": str, "class": str, "sha1": str, "conflict_group": str},
+        keep_default_na=False,
+        na_values=[],
+    )
     missing_cols = [c for c in IMAGE_INDEX_COLUMNS if c not in index.columns]
     if missing_cols:
         raise ValueError(f"{path} is missing column(s) {missing_cols}")
+    index["excluded"] = index["excluded"].map(
+        {"True": True, "False": False, True: True, False: False}
+    )
+    if index["excluded"].isna().any():
+        raise ValueError(f"{path}: column 'excluded' holds values that are not True/False")
     if list(index["idx"]) != list(range(len(index))):
         raise ValueError(f"{path}: idx column is not 0..{len(index) - 1} in order")
     return index

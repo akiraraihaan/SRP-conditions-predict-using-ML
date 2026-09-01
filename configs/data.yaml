@@ -61,3 +61,56 @@ expected_counts:
   severe_vibration: 133
   vibration: 51
 expected_total: 695
+
+# --- Clean corpus -------------------------------------------------------
+# The keys above describe the RAW 695-image corpus and stay as they are: the
+# legacy development split is reconstructed on it, unchanged, because its only
+# job is comparability with the 46 completed grid-search runs, which were
+# trained on contaminated data and cannot be retro-fixed.
+#
+# The block below describes the CLEAN corpus that the CV folds -- the reporting
+# protocol -- are built on.
+#
+# Exclusion rule: group the index by sha1. A group whose members span more than
+# one normalised class is a CONFLICT group and every file in it is excluded.
+# Not "keep one": without expert adjudication we cannot know which label is
+# correct, so keeping either member risks planting a wrong label. Dropping the
+# whole group is mechanical and needs no judgement. A group that is
+# byte-identical WITHIN a single class is benign duplication and is NOT
+# excluded. See MIGRATION_NOTES.md section 12.
+clean_corpus:
+  exclusion_rule: sha1_group_spanning_multiple_classes
+  expected_conflict_groups: 13
+  expected_excluded: 27
+  expected_total: 668
+  expected_counts:
+    collide_pump_and_vibration: 35
+    full_load_production: 50
+    gas_influence: 31
+    gas_influence_and_vibration: 69
+    insufficient_liquid_supply_and_vibration: 106
+    natural_flowing: 85
+    pump_leakage: 65
+    severe_insufficient_liquid_supply: 52
+    severe_vibration: 129
+    vibration: 46
+  # 129 / 31
+  imbalance_ratio: 4.16
+
+# --- Legacy reference (READ-ONLY) ---------------------------------------
+# The completed prior study. Used only to RECOVER the development split and to
+# cross-reference the old results. Nothing in this repository ever writes to it.
+# Override with SRPCARD_LEGACY_DIR. Relative paths resolve against the repo root.
+#
+# It is absent on Kaggle, which is why artifacts/dev_split.json is committed:
+# scripts 01 and 02 need the development split and cannot re-recover it there.
+legacy_reference:
+  dir: ../FINAL-pipeline
+  # Materialised legacy split. Letterboxed re-encodings, so their bytes differ
+  # from the raw originals -- sha1 matching falls through to filename, scoped by
+  # normalised class. See MIGRATION_NOTES.md section 4.
+  split_dir: yolo_dataset
+  registry: results/training_registry.json
+  canonical_metrics: results/metrics_canonical.csv
+  selected_run: n_ep50_bs16_lr1e-02
+  selected_weights: runs/classify/yolo26_n_cls_ep50_bs16_lr1e-02/weights/best.pt
