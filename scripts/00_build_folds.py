@@ -23,8 +23,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from srpcard import data as srp_data  # noqa: E402
+from srpcard import folds as srp_folds  # noqa: E402
 from srpcard import legacy_audit, legacy_split  # noqa: E402
-from srpcard.config import artifacts_dir, load_data_config, resolve_data_root  # noqa: E402
+from srpcard.config import (  # noqa: E402
+    artifacts_dir,
+    load_data_config,
+    load_folds_config,
+    resolve_data_root,
+)
 
 
 def rule(title: str) -> None:
@@ -238,12 +244,76 @@ def phase_2b_legacy_crossrefs(cfg: dict, index, dev_split: dict) -> None:
 # --------------------------------------------------------------------------
 
 
+def phase_3_folds(cfg: dict, index, *, rebuild: bool) -> None:
+    rule("PHASE 3 -- evaluation folds (clean 668)")
+
+    out = artifacts_dir(cfg) / "folds.json"
+    index_path = artifacts_dir(cfg) / "image_index.csv"
+
+    if out.exists() and not rebuild:
+        payload = srp_folds.load_folds(index, out, index_path)
+        print("[folds] %s already exists -- treated as a FROZEN input" % out.name)
+        print("[folds] corpus fingerprint verified against the loaded index  OK")
+    else:
+        if out.exists():
+            print("[folds] --rebuild-folds given: regenerating a frozen artefact")
+        payload = srp_folds.build_folds(index, cfg, load_folds_config(), index_path)
+        srp_folds.write_folds(payload, out)
+        print("[folds] wrote %s" % out)
+
+    corpus = payload["corpus"]
+    print(
+        "[folds] corpus n=%d  excluded=%d  groups=%d"
+        % (corpus["n"], corpus["excluded_n"], corpus["conflict_groups"])
+    )
+    print("[folds] sha1_of_sorted_included_sha1s = %s" % corpus["sha1_of_sorted_included_sha1s"])
+    print("[folds] built_from_index              = %s" % corpus["built_from_index"])
+
+    findings = srp_folds.verify_folds(payload, index)
+    print(
+        "\n[assert] %d folds; every image in exactly %d test partitions  OK"
+        % (findings["n_folds"], findings["every_image_in_exactly_n_test_partitions"])
+    )
+    print("[assert] no sha1 appears on both sides of any fold  OK")
+    print("[assert] excluded images absent; partitions disjoint and exhaustive  OK")
+
+    thin = findings["thin_test_classes"]
+    if thin:
+        print("\n[WARNING] %d fold/class combination(s) have fewer than 5 test images:" % len(thin))
+        for row in thin:
+            print(
+                "            repeat %d fold %d  %-45s n_test=%d"
+                % (row["repeat"], row["fold"], row["class"], row["n_test"])
+            )
+    else:
+        print("\n[check] no class falls below 5 test images in any fold")
+
+    clean = srp_data.clean_index(index)
+    rarest = clean["class"].value_counts().idxmin()
+    class_of = dict(zip(index["idx"].tolist(), index["class"].tolist()))
+    per_fold = [
+        sum(1 for i in entry["test_idx"] if class_of[i] == rarest) for entry in payload["folds"]
+    ]
+    print(
+        "[check] rarest class '%s' (n=%d): test partitions range %d-%d images"
+        % (rarest, int(clean["class"].value_counts().min()), min(per_fold), max(per_fold))
+    )
+
+    report = srp_folds.write_folds_report(payload, index, findings, data_cfg=cfg)
+    print("\n[folds] wrote %s" % report)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--force",
         action="store_true",
         help="overwrite artifacts/image_index.csv even if it differs (invalidates folds)",
+    )
+    parser.add_argument(
+        "--rebuild-folds",
+        action="store_true",
+        help="regenerate artifacts/folds.json, which is otherwise a frozen input",
     )
     parser.add_argument(
         "--skip-crossrefs",
@@ -265,8 +335,10 @@ def main() -> int:
         rule("PHASE 2b -- legacy cross-references")
         print("skipped -- legacy reference not present at %s" % legacy_split.legacy_dir(cfg))
 
-    rule("DONE -- phases 1, 2 and 2b")
-    print("Next: phase 3 (folds.json, built on the clean 668).")
+    phase_3_folds(cfg, index, rebuild=args.rebuild_folds)
+
+    rule("DONE -- phases 1, 2, 2b and 3")
+    print("artifacts/folds.json is frozen from here on. Next: registry, train, evaluate.")
     return 0
 
 
