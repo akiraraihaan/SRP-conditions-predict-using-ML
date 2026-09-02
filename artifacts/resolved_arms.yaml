@@ -1,3 +1,17 @@
+# artifacts/resolved_arms.yaml -- GENERATED SNAPSHOT. Do not edit by hand.
+#
+# Written by  : 01_complete_medium_grid
+# At          : 2026-09-02T09:28:45+00:00
+# Git commit  : 900245bf185c24bdf1eaf71f537d131a8671bca1-dirty
+#
+# A full snapshot of configs/arms.yaml as it stood after the resolving script
+# wrote its results back. configs/arms.yaml lives in the clone and dies with
+# the session; artifacts/ is the Drive symlink, so this copy survives.
+#
+# Restore it over configs/arms.yaml in a fresh clone with:
+#     python scripts/restore_arms.py
+#
+# ==== BEGIN VERBATIM COPY OF configs/arms.yaml ====
 # Experiment arms.
 #
 # Hyperparameters are NOT re-searched. The three YOLO arms carry the winners of
