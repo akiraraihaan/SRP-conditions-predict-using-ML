@@ -181,6 +181,27 @@ per-class counts actually found, whether the committed artefacts still match the
 fingerprints, and whether all five arms' pretrained checkpoints load. It exits
 non-zero if any of that failed. `--preflight-only` runs just that part.
 
+### The registry schema guard
+
+`registry.REQUIRED_RECORD_FIELDS` is the schema every record must carry. A record
+missing a field still matches by `run_id`, so its run is **skipped** and its older
+numbers are inherited into the final results. `append_record` refuses to write an
+incomplete record, and every script prints a loud block naming any incomplete
+record already on disk, right where it prints the skip count.
+
+`artifacts/registry.jsonl` is committed empty. If you ever see the schema-drift
+block, delete the offending line and let the run happen again.
+
+### The class-weight proof
+
+Scripts 02-05 run `verify_class_weights_applied()` once per invocation, before the
+run loop, and **abort** if it fails. The boolean and the measured
+weighted/unweighted cross-entropy pair are written into every record that
+invocation produces, so the proof travels with the results rather than living only
+in a smoke test. The legacy pipeline computed the balanced weights, printed them,
+charted them and never applied them; this is what makes that undetectable failure
+detectable.
+
 ### `--allow-pretrained-fallback`
 
 Each YOLO arm declares a YOLO11 `pretrained_fallback`. It is never taken

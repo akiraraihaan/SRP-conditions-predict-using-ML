@@ -29,7 +29,13 @@ from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import artifacts_dir, load_arms_config, load_data_config, resolve_data_root  # noqa: E402
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import ARM_NAMES, add_fallback_argument, build_model  # noqa: E402
-from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
+from srpcard.train import (  # noqa: E402
+    ImageCache,
+    TrainConfig,
+    labels_by_idx_map,
+    require_class_weights_verified,
+    train_fold,
+)
 
 SCRIPT = "03_run_cv"
 
@@ -66,6 +72,9 @@ def main() -> int:
     index_path = artifacts_dir(data_cfg) / "image_index.csv"
     payload = srp_folds.load_folds(index, index_path=index_path)
     print("[folds] corpus fingerprint verified  OK  (n=%d)" % payload["corpus"]["n"])
+    # Verified above; recorded on every record below, so each result carries
+    # the corpus it was produced on rather than only having been checked once.
+    corpus_fp = srp_folds.cv_corpus_fingerprint(payload)
 
     selected = [
         entry
@@ -142,6 +151,12 @@ def main() -> int:
     print(
         "[cache] letterboxed %d images into RAM in %.1fs"
         % (len(cache._cache), time.perf_counter() - warm_start)
+    )
+
+    # Once per invocation, before any training. Aborts if the balanced weights
+    # do not actually reach the loss; the compact proof goes into every record.
+    weights_proof = require_class_weights_verified(
+        int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
     )
 
     # ---- run ----
@@ -235,22 +250,19 @@ def main() -> int:
             val_seed=spec["val_seed"],
             checkpoint_resolved=bundle.checkpoint_resolved,
             pretrained_fallback_used=bundle.pretrained_fallback_used,
+            class_weights_verified=weights_proof["passed"],
+            class_weights_proof=weights_proof,
+            corpus_fingerprint=corpus_fp,
+            training=registry.training_outcome(result),
             metrics=metrics,
             efficiency=efficiency,
             wall_time_s=wall,
             determinism_status=result.determinism,
             extra={
-                "selected_epoch": result.best_epoch,
-                "best_val_f1": result.best_val_f1,
-                "best_val_loss": result.best_val_loss,
-                "stopped_early": result.stopped_early,
-                "epochs_run": len(result.history),
                 "selection_metric": "val_f1_macro",
                 "selection_tiebreak": "val_loss_unweighted",
                 # what a val-loss criterion WOULD have picked -- recorded, not acted on
-                "min_val_loss_epoch": result.min_val_loss_epoch,
                 "min_val_loss": result.min_val_loss,
-                "history": result.history,
                 "class_weight_values": result.class_weights,
                 "device": result.device,
                 "model_notes": bundle.notes,

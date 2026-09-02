@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd  # noqa: E402
 
 from srpcard import data as srp_data  # noqa: E402
+from srpcard import folds as srp_folds  # noqa: E402
 from srpcard import registry  # noqa: E402
 from srpcard.config import (  # noqa: E402
     MissingInputError,
@@ -225,6 +226,15 @@ def main() -> int:
     print("  -> every number below belongs to the LEGACY UNWEIGHTED PROTOCOL")
 
     index = srp_data.load_image_index()
+    index_path = artifacts_dir(data_cfg) / "image_index.csv"
+    # The corpus THIS script runs on: the raw 695 with original labels, not the
+    # clean 668 the CV folds use. Recorded on every record so each result carries
+    # the corpus it was produced on.
+    corpus_fp = srp_folds.dev_corpus_fingerprint(index, index_path)
+    print(
+        "[corpus] %s  n=%d  sha1=%s"
+        % (corpus_fp["kind"], corpus_fp["n"], corpus_fp["sha1_of_sorted_included_sha1s"])
+    )
     dev_split = load_dev_split()
     print(
         "\n[dev split] train %d  val %d  test %d"
@@ -386,6 +396,24 @@ def main() -> int:
             val_seed=None,
             checkpoint_resolved=Path(weights_name).name,
             pretrained_fallback_used=fallback_used,
+            # Deliberately None, not False: this script reproduces the LEGACY
+            # unweighted protocol, so there are no class weights to verify here.
+            # False would mean "measured and failed". See the header.
+            class_weights_verified=None,
+            class_weights_proof={
+                "not_applicable": True,
+                "reason": (
+                    "01 replicates the legacy unweighted ultralytics protocol; "
+                    "class weights are deliberately not applied (MIGRATION_NOTES 5.4)"
+                ),
+            },
+            corpus_fingerprint=corpus_fp,
+            training=registry.training_outcome_absent(
+                "trained by ultralytics model.train(), not the uniform loop in "
+                "src/srpcard/train.py; per-epoch history and best-epoch selection "
+                "are ultralytics' own and are not comparable with scripts 02-05",
+                epochs_run=spec["epochs"],
+            ),
             metrics=test_metrics,
             efficiency={"size_mb": size_mb},
             wall_time_s=wall,

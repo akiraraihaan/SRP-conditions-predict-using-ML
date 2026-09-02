@@ -54,7 +54,7 @@ def summarise_cv(
     frame = pd.DataFrame(
         [{"arm": r["arm"], "architecture": r["architecture"],
           **{m: r.get(m) for m in SCALAR_METRICS},
-          "selected_epoch": (r.get("extra") or {}).get("selected_epoch"),
+          "selected_epoch": r.get("selected_epoch"),
           "epochs": r.get("epochs")}
          for r in records]
     )
@@ -127,19 +127,18 @@ def selected_epoch_distribution(
     records = records if records is not None else cv_records()
     rows = []
     for r in records:
-        extra = r.get("extra") or {}
-        if extra.get("selected_epoch") is None:
+        if r.get("selected_epoch") is None:
             continue
         rows.append(
             {
                 "arm": r["arm"],
                 "repeat": r.get("repeat"),
                 "fold": r.get("fold"),
-                "selected_epoch": extra["selected_epoch"] + 1,
+                "selected_epoch": r["selected_epoch"] + 1,
                 "epoch_budget": r.get("epochs"),
-                "fraction_of_budget": (extra["selected_epoch"] + 1) / max(r.get("epochs") or 1, 1),
-                "min_val_loss_epoch": (extra.get("min_val_loss_epoch", -1) or -1) + 1,
-                "best_val_f1": extra.get("best_val_f1"),
+                "fraction_of_budget": (r["selected_epoch"] + 1) / max(r.get("epochs") or 1, 1),
+                "min_val_loss_epoch": (r.get("min_val_loss_epoch", -1) or -1) + 1,
+                "best_val_f1": r.get("best_val_f1"),
             }
         )
     return pd.DataFrame(rows)

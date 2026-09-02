@@ -30,6 +30,7 @@ import pandas as pd  # noqa: E402
 
 from srpcard import data as srp_data  # noqa: E402
 from srpcard import evaluate, registry  # noqa: E402
+from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import (  # noqa: E402
     artifacts_dir,
     load_arms_config,
@@ -39,7 +40,13 @@ from srpcard.config import (  # noqa: E402
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.legacy_split import load_dev_split  # noqa: E402
 from srpcard.models import add_fallback_argument, build_model  # noqa: E402
-from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
+from srpcard.train import (  # noqa: E402
+    ImageCache,
+    TrainConfig,
+    labels_by_idx_map,
+    require_class_weights_verified,
+    train_fold,
+)
 
 SCRIPT = "02_lr_sweep_baselines"
 DEV_SEED = 20000  # distinct from the CV run_seed space (10000 + repeat*100 + fold)
@@ -102,6 +109,15 @@ def main() -> int:
     print("  epochs : %d" % sweep["epochs"])
 
     index = srp_data.load_image_index()
+    index_path = artifacts_dir(data_cfg) / "image_index.csv"
+    # The corpus THIS script runs on: the raw 695 with original labels, not the
+    # clean 668 the CV folds use. Recorded on every record so each result carries
+    # the corpus it was produced on.
+    corpus_fp = srp_folds.dev_corpus_fingerprint(index, index_path)
+    print(
+        "[corpus] %s  n=%d  sha1=%s"
+        % (corpus_fp["kind"], corpus_fp["n"], corpus_fp["sha1_of_sorted_included_sha1s"])
+    )
     dev_split = load_dev_split()
     print(
         "\n[dev split] train %d  val %d  test %d"
@@ -134,6 +150,10 @@ def main() -> int:
         for spec in todo:
             print("  TODO %s  %-18s lr %g" % (spec["run_id"], spec["arm"], spec["lr"]))
         return 0
+
+    weights_proof = require_class_weights_verified(
+        int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
+    )
 
     if todo:
         data_root = resolve_data_root(data_cfg)
@@ -222,20 +242,19 @@ def main() -> int:
                 val_seed=None,
                 checkpoint_resolved=bundle.checkpoint_resolved,
                 pretrained_fallback_used=bundle.pretrained_fallback_used,
+                class_weights_verified=weights_proof["passed"],
+                class_weights_proof=weights_proof,
+                corpus_fingerprint=corpus_fp,
+                training=registry.training_outcome(result),
                 metrics=test_metrics,
                 efficiency=efficiency,
                 wall_time_s=wall,
                 determinism_status=result.determinism,
                 extra={
                     "protocol": "uniform",
-                    "selected_epoch": result.best_epoch,
                     "selection_metric": "val_f1_macro",
                     "selection_tiebreak": "val_loss_unweighted",
                     "f1_macro_val": val_metrics["f1_macro"],
-                    "best_val_f1": result.best_val_f1,
-                    "best_val_loss": result.best_val_loss,
-                    "min_val_loss_epoch": result.min_val_loss_epoch,
-                    "history": result.history,
                     "val_metrics": val_metrics,
                 },
             )
@@ -250,7 +269,7 @@ def main() -> int:
             "lr": r["lr"],
             "f1_macro_val": r["extra"]["f1_macro_val"],
             "f1_macro_dev_test": r["f1_macro"],
-            "selected_epoch": r["extra"]["selected_epoch"] + 1,
+            "selected_epoch": r["selected_epoch"] + 1,
         }
         for r in registry.load_registry()
         if r.get("script") == SCRIPT

@@ -48,6 +48,23 @@ from .data import clean_index
 # --------------------------------------------------------------------------
 
 
+def fingerprint_of_sha1s(sha1s) -> str:
+    """SHA-1 of the images' own SHA-1 hex digests, sorted ascending and joined
+    with newlines (no trailing newline), UTF-8 encoded.
+
+    Identifies the exact set of image CONTENTS, independent of path, filename or
+    row order. Shared by the clean-corpus fingerprint below and by the raw-corpus
+    one the development-split scripts record.
+    """
+    return hashlib.sha1("\n".join(sorted(sha1s)).encode("utf-8")).hexdigest()  # noqa: S324
+
+
+def _index_file_digest(index_path: Path | None) -> str:
+    if index_path is not None and Path(index_path).exists():
+        return hashlib.sha1(Path(index_path).read_bytes()).hexdigest()  # noqa: S324
+    return "unknown"
+
+
 def corpus_fingerprint(index: pd.DataFrame, index_path: Path | None = None) -> dict[str, Any]:
     """Fingerprint the clean corpus this fold file was built from.
 
@@ -57,23 +74,69 @@ def corpus_fingerprint(index: pd.DataFrame, index_path: Path | None = None) -> d
     independent of path, filename or row order.
     """
     included = clean_index(index)
-    joined = "\n".join(sorted(included["sha1"].tolist()))
-    digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()  # noqa: S324
-
     fingerprint: dict[str, Any] = {
         "n": int(len(included)),
-        "sha1_of_sorted_included_sha1s": digest,
+        "sha1_of_sorted_included_sha1s": fingerprint_of_sha1s(included["sha1"].tolist()),
         "excluded_n": int(index["excluded"].astype(bool).sum()),
         "conflict_groups": int(
             index.loc[index["excluded"].astype(bool), "conflict_group"].nunique()
         ),
     }
-    if index_path is not None and Path(index_path).exists():
-        fingerprint["built_from_index"] = hashlib.sha1(  # noqa: S324
-            Path(index_path).read_bytes()
-        ).hexdigest()
-    else:
-        fingerprint["built_from_index"] = "unknown"
+    fingerprint["built_from_index"] = _index_file_digest(index_path)
+    return fingerprint
+
+
+def dev_corpus_fingerprint(
+    index: pd.DataFrame, index_path: Path | None = None
+) -> dict[str, Any]:
+    """Fingerprint the RAW 695-image corpus, for the development-split scripts.
+
+    Scripts 01 and 02 run on the recovered legacy development split over the raw
+    index WITH its original, contaminated labels -- not on the clean 668 the CV
+    folds are built on. Recording the clean-corpus fingerprint against those runs
+    would name a corpus they never touched, so they record this one instead. The
+    key names match `corpus_fingerprint` so the two can be diffed directly; the
+    `kind` field is what tells them apart.
+    """
+    return {
+        "kind": "dev_raw_695",
+        "n": int(len(index)),
+        "sha1_of_sorted_included_sha1s": fingerprint_of_sha1s(index["sha1"].tolist()),
+        "excluded_n": 0,
+        "conflict_groups": int(
+            index.loc[index["excluded"].astype(bool), "conflict_group"].nunique()
+        ),
+        "built_from_index": _index_file_digest(index_path),
+        "note": (
+            "the raw corpus with original labels; conflict groups are COUNTED but "
+            "NOT excluded on this split"
+        ),
+    }
+
+
+def cv_corpus_fingerprint(folds_payload: dict[str, Any]) -> dict[str, Any]:
+    """The corpus block already inside folds.json, tagged with its kind.
+
+    Scripts 03, 04 and 05 verify this fingerprint at load time; this is what they
+    write into every record so each result carries the corpus it was produced on.
+
+    Only the identity fields are carried across. folds.json's corpus block also
+    holds the tool versions present when the folds were built, which would be
+    duplicated into every one of the ~170 records for no gain -- each record
+    already carries its own `library_versions`.
+    """
+    corpus = folds_payload["corpus"]
+    fingerprint = {"kind": "cv_clean_668"}
+    for key in (
+        "n",
+        "sha1_of_sorted_included_sha1s",
+        "excluded_n",
+        "conflict_groups",
+        "built_from_index",
+        "built_at",
+    ):
+        if key in corpus:
+            fingerprint[key] = corpus[key]
     return fingerprint
 
 

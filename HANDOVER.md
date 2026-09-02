@@ -3,9 +3,11 @@
 State of the repository at the end of the scaffolding work, what to run in which
 order, and what to carry back out of Kaggle so the next session resumes cleanly.
 
-**Nothing has been run at scale.** `artifacts/registry.jsonl` holds exactly one
-record: the `yolo26n` repeat-0 fold-0 smoke run, on CPU, under the final
-criterion. Every other number in this repository is still to be produced.
+**Nothing has been run at scale.** `artifacts/registry.jsonl` is committed
+**empty**. It previously held one CPU smoke record for `yolo26n` r0f0; that record
+predated the current schema, and because script 03 skips by `run_id` it would have
+suppressed the GPU run of that fold and left one CPU result on an older schema
+sitting in the final 75. It was truncated deliberately — see §4.4.
 
 ---
 
@@ -51,7 +53,7 @@ criterion. Every other number in this repository is still to be produced.
 | `artifacts/legacy_contamination.json` | the three cross-reference results |
 | `artifacts/legacy_grid_metrics.csv` | the 46 legacy configs; **script 01 needs this on Kaggle** |
 | `artifacts/legacy_test_predictions.csv` | per-image predictions behind cross-reference 2 |
-| `artifacts/registry.jsonl` | **the resume state**; committed at the end of every session, restored by the next session's clone |
+| `artifacts/registry.jsonl` | **the resume state**; committed at the end of every session, restored by the next session's clone. Currently empty |
 
 ### Generated, not committed
 
@@ -160,7 +162,64 @@ carries the same guard explicitly.
 As of the preflight run on this machine, all three YOLO26 classification
 checkpoints download successfully, so the fallback should never fire.
 
-### 4.3 Getting the results out
+### 4.3 The record schema, and why stale records are dangerous
+
+`registry.REQUIRED_RECORD_FIELDS` is the current schema. Presence is what is
+checked, not truthiness: a field that legitimately does not apply is `None` with
+the reason recorded beside it, which is different from the field being absent
+because an older version of the code did not know about it.
+
+That distinction matters because of how resumption works. A stale record still
+matches by `run_id`, so the run it stands for is **skipped** — it is never re-run,
+and its older numbers are inherited into the final results. So:
+
+- `append_record` **refuses** to write a record missing any required field. That is
+  this code's own bug, caught at the moment it would be planted.
+- `warn_if_stale` prints a loud block naming every offending line, its `run_id` and
+  its missing fields. It runs from `print_plan`, once per script invocation, right
+  where the skip count is printed.
+- `summarise` reports `n_incomplete_schema` and `n_class_weights_unverified`.
+
+Three groups of field were added because they had to travel *with* the results
+rather than live only in a console line or a smoke test:
+
+| field | why |
+| --- | --- |
+| `checkpoint_resolved`, `pretrained_fallback_used` | which pretrained weights actually loaded (§4.2) |
+| `class_weights_verified`, `class_weights_proof` | the measured proof that the balanced weights reach the loss (§4.4) |
+| `corpus_fingerprint` | the corpus the run was produced on — verified at load time by every consumer of `folds.json`, now recorded too |
+| `selected_epoch`, `epochs_run`, `stopped_early`, `best_val_f1`, `best_val_loss`, `min_val_loss_epoch`, `history` | the uniform-protocol training outcome, promoted from `extra` to top level so there is one source of truth |
+
+`corpus_fingerprint` carries a `kind`: `cv_clean_668` for scripts 03–05 (taken from
+the verified `folds.json` corpus block) and `dev_raw_695` for scripts 01 and 02,
+which run on the raw index with its original labels and never touch the clean
+corpus. Same key names, so the two can be diffed directly.
+
+Script 01 is the one script whose records carry `class_weights_verified: None` and
+a `None` training outcome — it reproduces the legacy unweighted protocol through
+`ultralytics model.train()`, so there are no class weights to verify and no
+uniform-loop history to record. Both carry an explicit reason string.
+
+### 4.4 The class-weight proof travels with the results
+
+`train.verify_class_weights_applied()` existed but nothing called it, so the proof
+lived only in a smoke test. It is now called by `require_class_weights_verified()`
+**once per invocation of scripts 02, 03, 04 and 05, before the run loop**, and:
+
+- the script **aborts** if it fails — no run is written under weights that do not
+  reach the loss;
+- the boolean and the measured weighted/unweighted cross-entropy pair go into
+  **every record** that invocation writes.
+
+Script 04 runs it too even though the ablation trains *unweighted*: the ablation
+only means anything if the weighting it removes demonstrably works.
+
+This is guarding against a failure that already happened once. The legacy pipeline
+computed the balanced weights, printed them, charted them — and never passed them
+to the trainer (MIGRATION_NOTES.md §5.4). Nothing in its saved output would have
+revealed it.
+
+### 4.5 Getting the results out
 
 **After every session, in order:**
 

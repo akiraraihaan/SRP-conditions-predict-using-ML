@@ -6,6 +6,14 @@ script checks the registry first and prints complete / skipped / remaining.
 
 Append-only and flushed per record: a session killed at run 40 loses nothing, and
 re-running the same command resumes at 41.
+
+That resume mechanism is also the reason this module polices its own schema.
+A record written by an older version of the code still matches by `run_id`, so
+the run it stands for is SKIPPED and never re-run -- the stale record is
+inherited into the final results instead of being replaced. `REQUIRED_RECORD_FIELDS`
+is the current schema: `append_record` refuses to write a record missing any of
+them, and `audit_registry` (called from `print_plan`, once per script invocation)
+warns loudly about any record already on disk that lacks them.
 """
 
 from __future__ import annotations
@@ -35,6 +43,91 @@ RUN_ID_FIELDS = (
     "run_seed",
     "extra",
 )
+
+
+# Every field a record must carry to be readable as CURRENT-schema. Presence is
+# what is checked, not truthiness: a legitimately inapplicable value is None with
+# the reason recorded beside it (script 01 has no uniform-protocol training
+# outcome, for instance), and that is different from the field being absent
+# because an older version of this code did not know about it.
+REQUIRED_RECORD_FIELDS = (
+    # identity -- these also feed run_id
+    "run_id",
+    "script",
+    "arm",
+    "architecture",
+    "split_kind",
+    "repeat",
+    "fold",
+    "epochs",
+    "batch",
+    "lr",
+    "class_weights",
+    "run_seed",
+    "val_seed",
+    # what was actually loaded and proved, rather than what was requested
+    "checkpoint_resolved",
+    "pretrained_fallback_used",
+    "class_weights_verified",
+    "class_weights_proof",
+    "corpus_fingerprint",
+    # training outcome
+    "selected_epoch",
+    "epochs_run",
+    "stopped_early",
+    "best_val_f1",
+    "best_val_loss",
+    "min_val_loss_epoch",
+    "history",
+    # quality
+    "f1_macro",
+    "accuracy",
+    "confusion_matrix",
+    "class_order",
+    # provenance
+    "wall_time_s",
+    "determinism_status",
+    "git_commit",
+    "timestamp",
+    "library_versions",
+    "extra",
+)
+
+# The training-outcome block, filled from a TrainResult or explicitly absent.
+TRAINING_FIELDS = (
+    "selected_epoch",
+    "epochs_run",
+    "stopped_early",
+    "best_val_f1",
+    "best_val_loss",
+    "min_val_loss_epoch",
+    "history",
+)
+
+
+def training_outcome(result: Any) -> dict[str, Any]:
+    """The uniform-protocol training outcome, from a `train.TrainResult`."""
+    return {
+        "selected_epoch": result.best_epoch,
+        "epochs_run": len(result.history),
+        "stopped_early": bool(result.stopped_early),
+        "best_val_f1": result.best_val_f1,
+        "best_val_loss": result.best_val_loss,
+        "min_val_loss_epoch": result.min_val_loss_epoch,
+        "history": result.history,
+    }
+
+
+def training_outcome_absent(reason: str, *, epochs_run: int | None = None) -> dict[str, Any]:
+    """For a run trained outside the uniform loop -- script 01's legacy protocol.
+
+    The fields are present and None, with the reason recorded, so the schema check
+    distinguishes "does not apply here" from "written before this field existed".
+    """
+    block: dict[str, Any] = {field: None for field in TRAINING_FIELDS}
+    block["epochs_run"] = epochs_run
+    block["training_outcome_absent_reason"] = reason
+    return block
 
 
 def compute_run_id(**params: Any) -> str:
@@ -73,8 +166,100 @@ def completed_run_ids(path: Path | None = None) -> set[str]:
     return {r["run_id"] for r in load_registry(path) if "run_id" in r}
 
 
+def missing_fields(record: dict[str, Any]) -> list[str]:
+    """Which REQUIRED_RECORD_FIELDS this record does not carry."""
+    return [field for field in REQUIRED_RECORD_FIELDS if field not in record]
+
+
+def audit_registry(path: Path | None = None) -> dict[str, Any]:
+    """Find records on disk that predate the current schema.
+
+    Returns the incomplete ones with the fields each is missing. Never raises:
+    the caller decides whether a stale record is fatal.
+    """
+    path = Path(path) if path is not None else registry_path()
+    records = load_registry(path)
+    incomplete = []
+    for position, record in enumerate(records, 1):
+        missing = missing_fields(record)
+        if missing:
+            incomplete.append(
+                {
+                    "line": position,
+                    "run_id": record.get("run_id", "?"),
+                    "script": record.get("script", "?"),
+                    "arm": record.get("arm", "?"),
+                    "repeat": record.get("repeat"),
+                    "fold": record.get("fold"),
+                    "missing": missing,
+                }
+            )
+    return {"path": str(path), "n_records": len(records), "incomplete": incomplete}
+
+
+def warn_if_stale(path: Path | None = None) -> bool:
+    """Print a loud block if any record on disk predates the current schema.
+
+    Returns True when the registry is clean. Called once per script invocation
+    from `print_plan`, because a stale record is not merely untidy: its run_id
+    still matches, so the run it stands for is SKIPPED and the stale numbers are
+    inherited into the final results.
+    """
+    audit = audit_registry(path)
+    if not audit["incomplete"]:
+        return True
+
+    bar = "!" * 74
+    print("\n" + bar)
+    print(
+        "REGISTRY SCHEMA DRIFT -- %d of %d record(s) predate the current schema"
+        % (len(audit["incomplete"]), audit["n_records"])
+    )
+    print("  %s" % audit["path"])
+    for entry in audit["incomplete"]:
+        print(
+            "  line %-4d %-16s %-22s %-12s r%sf%s"
+            % (
+                entry["line"],
+                entry["run_id"],
+                entry["script"],
+                entry["arm"],
+                entry["repeat"],
+                entry["fold"],
+            )
+        )
+        print("            missing: %s" % ", ".join(entry["missing"]))
+    print(
+        "  These runs are SKIPPED by run_id, so they will not be re-run and their\n"
+        "  older numbers would be inherited into the final results. Delete the\n"
+        "  offending line(s) from the registry and let the run happen again."
+    )
+    print(bar + "\n")
+    return False
+
+
 def append_record(record: dict[str, Any], path: Path | None = None) -> Path:
-    """Append one record and flush it to disk immediately."""
+    """Append one record and flush it to disk immediately.
+
+    Refuses a record that does not carry the current schema -- that is this code's
+    own bug, and writing it would plant exactly the stale record `warn_if_stale`
+    exists to catch.
+    """
+    missing = missing_fields(record)
+    if missing:
+        raise ValueError(
+            "Refusing to append a registry record missing %d required field(s): %s\n"
+            "  run_id %s (%s, %s)\n"
+            "  Every field in registry.REQUIRED_RECORD_FIELDS must be present, even\n"
+            "  if its value is None. See registry.training_outcome_absent()."
+            % (
+                len(missing),
+                ", ".join(missing),
+                record.get("run_id", "?"),
+                record.get("script", "?"),
+                record.get("arm", "?"),
+            )
+        )
     path = Path(path) if path is not None else registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as fh:
@@ -101,6 +286,10 @@ def build_record(
     val_seed: int | None,
     checkpoint_resolved: str,
     pretrained_fallback_used: bool,
+    class_weights_verified: bool | None,
+    class_weights_proof: dict[str, Any],
+    corpus_fingerprint: dict[str, Any],
+    training: dict[str, Any],
     metrics: dict[str, Any],
     efficiency: dict[str, Any],
     wall_time_s: float,
@@ -109,11 +298,22 @@ def build_record(
 ) -> dict[str, Any]:
     """Assemble one registry record. Every field the brief asks for is present.
 
-    `checkpoint_resolved` and `pretrained_fallback_used` are REQUIRED, not
-    optional: they record which pretrained weights the run actually loaded, so a
-    YOLO11 fallback silently standing in for a YOLO26 arm is visible in the
-    record itself rather than only in a console line nobody kept. See
-    src/srpcard/models.py.
+    Nothing here is optional. Each argument that could have been defaulted is one
+    a future caller could forget, and a forgotten field is a stale record that
+    still matches by run_id and is therefore never re-run:
+
+    - `checkpoint_resolved` / `pretrained_fallback_used` -- which pretrained
+      weights the run actually loaded, so a YOLO11 fallback standing in for a
+      YOLO26 arm is visible in the record rather than only in a console line
+      nobody kept (src/srpcard/models.py).
+    - `class_weights_verified` / `class_weights_proof` -- the measured proof that
+      the balanced weights reach the loss. The legacy pipeline computed them,
+      printed them, charted them and never applied them; that proof has to travel
+      with the results (src/srpcard/train.py:verify_class_weights_applied).
+    - `corpus_fingerprint` -- the corpus the run was produced on. Verified at load
+      time by every consumer of folds.json; recorded here so the result carries it.
+    - `training` -- the uniform-protocol outcome, from `training_outcome(result)`
+      or `training_outcome_absent(reason)`.
     """
     return {
         "run_id": run_id,
@@ -129,9 +329,15 @@ def build_record(
         "class_weights": class_weights,
         "run_seed": run_seed,
         "val_seed": val_seed,
-        # --- what was actually loaded, not what was requested ---
+        # --- what was actually loaded and proved, not what was requested ---
         "checkpoint_resolved": checkpoint_resolved,
         "pretrained_fallback_used": bool(pretrained_fallback_used),
+        "class_weights_verified": class_weights_verified,
+        "class_weights_proof": class_weights_proof,
+        "corpus_fingerprint": corpus_fingerprint,
+        # --- training outcome (None throughout when the uniform loop was not used) ---
+        **{field: training.get(field) for field in TRAINING_FIELDS},
+        "training_outcome_absent_reason": training.get("training_outcome_absent_reason"),
         # --- quality ---
         "f1_macro": metrics.get("f1_macro"),
         "accuracy": metrics.get("accuracy"),
@@ -173,12 +379,20 @@ def plan_runs(
     return todo, skipped
 
 
-def print_plan(script: str, todo: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> None:
+def print_plan(
+    script: str,
+    todo: list[dict[str, Any]],
+    skipped: list[dict[str, Any]],
+    path: Path | None = None,
+) -> None:
     total = len(todo) + len(skipped)
     print(
         "[registry] %s: %d run(s) planned -- %d already complete (skipped), %d remaining"
         % (script, total, len(skipped), len(todo))
     )
+    # Once per script invocation, right where the skip count is printed: those
+    # skips are exactly what a stale record buys you.
+    warn_if_stale(path)
 
 
 def summarise(path: Path | None = None) -> dict[str, Any]:
@@ -192,6 +406,10 @@ def summarise(path: Path | None = None) -> dict[str, Any]:
     fallback = sorted(
         {record.get("arm", "?") for record in records if record.get("pretrained_fallback_used")}
     )
+    incomplete = [r for r in records if missing_fields(r)]
+    unverified = [
+        r for r in records if r.get("class_weights_verified") is False
+    ]
     return {
         "n_records": len(records),
         "by_script": by_script,
@@ -200,4 +418,12 @@ def summarise(path: Path | None = None) -> dict[str, Any]:
             1 for record in records if record.get("pretrained_fallback_used")
         ),
         "arms_with_pretrained_fallback": fallback,
+        "n_incomplete_schema": len(incomplete),
+        "n_class_weights_unverified": len(unverified),
+        "corpus_fingerprints": sorted(
+            {
+                (r.get("corpus_fingerprint") or {}).get("sha1_of_sorted_included_sha1s", "?")
+                for r in records
+            }
+        ),
     }

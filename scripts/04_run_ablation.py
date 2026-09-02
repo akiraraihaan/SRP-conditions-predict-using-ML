@@ -41,7 +41,13 @@ from srpcard.config import (  # noqa: E402
 )
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import add_fallback_argument, build_model  # noqa: E402
-from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
+from srpcard.train import (  # noqa: E402
+    ImageCache,
+    TrainConfig,
+    labels_by_idx_map,
+    require_class_weights_verified,
+    train_fold,
+)
 
 SCRIPT = "04_run_ablation"
 CV_SCRIPT = "03_run_cv"
@@ -81,6 +87,7 @@ def main() -> int:
     index_path = artifacts_dir(data_cfg) / "image_index.csv"
     payload = srp_folds.load_folds(index, index_path=index_path)
     print("[folds] corpus fingerprint verified  OK  (n=%d)" % payload["corpus"]["n"])
+    corpus_fp = srp_folds.cv_corpus_fingerprint(payload)
 
     specs = []
     for entry in payload["folds"]:
@@ -109,6 +116,12 @@ def main() -> int:
         for spec in todo:
             print("  TODO %s  r%df%d" % (spec["run_id"], spec["repeat"], spec["fold"]))
         return 0
+
+    # Run even though THIS script trains unweighted: the ablation only means
+    # something if the weighting it removes demonstrably works in the first place.
+    weights_proof = require_class_weights_verified(
+        int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
+    )
 
     if todo and not args.analyse_only:
         data_root = resolve_data_root(data_cfg)
@@ -171,18 +184,17 @@ def main() -> int:
                     val_seed=spec["val_seed"],
                     checkpoint_resolved=bundle.checkpoint_resolved,
                     pretrained_fallback_used=bundle.pretrained_fallback_used,
+                    class_weights_verified=weights_proof["passed"],
+                    class_weights_proof=weights_proof,
+                    corpus_fingerprint=corpus_fp,
+                    training=registry.training_outcome(result),
                     metrics=metrics,
                     efficiency=efficiency,
                     wall_time_s=wall,
                     determinism_status=result.determinism,
                     extra={
                         "ablation": "class_weights_none",
-                        "selected_epoch": result.best_epoch,
-                        "best_val_f1": result.best_val_f1,
-                        "best_val_loss": result.best_val_loss,
-                        "min_val_loss_epoch": result.min_val_loss_epoch,
                         "selection_metric": "val_f1_macro",
-                        "history": result.history,
                     },
                 )
             )

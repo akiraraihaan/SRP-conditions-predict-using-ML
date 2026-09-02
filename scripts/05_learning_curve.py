@@ -49,7 +49,13 @@ from srpcard.config import (  # noqa: E402
     resolve_data_root,
 )
 from srpcard.models import add_fallback_argument, build_model  # noqa: E402
-from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
+from srpcard.train import (  # noqa: E402
+    ImageCache,
+    TrainConfig,
+    labels_by_idx_map,
+    require_class_weights_verified,
+    train_fold,
+)
 
 SCRIPT = "05_learning_curve"
 SUBSAMPLE_SEED_BASE = 900000
@@ -121,6 +127,7 @@ def main() -> int:
     payload = srp_folds.load_folds(index, index_path=index_path)
     entries = payload["folds"][: args.folds] if args.folds else payload["folds"]
     print("[folds] using %d fold(s)" % len(entries))
+    corpus_fp = srp_folds.cv_corpus_fingerprint(payload)
 
     labels_by_idx = labels_by_idx_map(index, data_cfg)
 
@@ -153,6 +160,10 @@ def main() -> int:
         print("  %d runs = %d folds x %d fractions (1 draw each)"
               % (len(specs), len(entries), len(fractions)))
         return 0
+
+    weights_proof = require_class_weights_verified(
+        int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
+    )
 
     if todo:
         data_root = resolve_data_root(data_cfg)
@@ -207,6 +218,10 @@ def main() -> int:
                 val_seed=spec["val_seed"],
                 checkpoint_resolved=bundle.checkpoint_resolved,
                 pretrained_fallback_used=bundle.pretrained_fallback_used,
+                class_weights_verified=weights_proof["passed"],
+                class_weights_proof=weights_proof,
+                corpus_fingerprint=corpus_fp,
+                training=registry.training_outcome(result),
                 metrics=metrics,
                 efficiency={},
                 wall_time_s=wall,
@@ -216,8 +231,6 @@ def main() -> int:
                     "fraction": spec["fraction"],
                     "n_train": len(subset),
                     "subsample_seed": seed,
-                    "selected_epoch": result.best_epoch,
-                    "best_val_f1": result.best_val_f1,
                 },
             )
         )

@@ -537,6 +537,73 @@ def verify_class_weights_applied(num_classes: int = 10, seed: int = 0) -> dict[s
     return results
 
 
+PROOF_FIELDS_FOR_RECORD = (
+    "passed",
+    "weighted_loss",
+    "unweighted_loss",
+    "losses_differ",
+    "weighted_matches_manual",
+    "optimiser_step_differs",
+    "matches_sklearn_balanced",
+    "param_delta_after_one_step",
+)
+
+
+def require_class_weights_verified(
+    num_classes: int = 10, *, script: str, seed: int = 0
+) -> dict[str, Any]:
+    """Run the class-weight proof once per script invocation, and abort if it fails.
+
+    Returns the compact form that goes into EVERY record the invocation writes.
+    The full result is printed.
+
+    This is called before the run loop, not inside it: the proof is a property of
+    the code and the environment, not of any one fold, and re-running it 75 times
+    would say nothing new. Recording it on every record is what makes it travel
+    with the results -- the legacy pipeline's failure was precisely that the
+    weights were computed and displayed but never applied, and nothing in the
+    saved output would have revealed it (MIGRATION_NOTES.md section 5.4).
+
+    Raises RuntimeError when the proof fails, so no run is written under weights
+    that do not actually reach the loss.
+    """
+    proof = verify_class_weights_applied(num_classes=num_classes, seed=seed)
+
+    print("\n[class weights] proof that the balanced weights reach the loss:")
+    print("  matches sklearn 'balanced'      : %s" % proof.get("matches_sklearn_balanced"))
+    print(
+        "  weighted vs unweighted CE       : %.6f vs %.6f  (differ=%s)"
+        % (proof["weighted_loss"], proof["unweighted_loss"], proof["losses_differ"])
+    )
+    print("  weighted == hand-computed mean  : %s" % proof["weighted_matches_manual"])
+    print(
+        "  one optimiser step differs      : %s  (max |dW| = %g)"
+        % (proof["optimiser_step_differs"], proof["param_delta_after_one_step"])
+    )
+    print("  PASSED                          : %s" % proof["passed"])
+
+    if not proof["passed"]:
+        raise RuntimeError(
+            "Class-weight verification FAILED -- refusing to run %s.\n"
+            "  matches_sklearn_balanced : %s\n"
+            "  losses_differ            : %s\n"
+            "  weighted_matches_manual  : %s\n"
+            "  optimiser_step_differs   : %s\n"
+            "  The balanced weights are not reaching the training loss. This is the\n"
+            "  exact failure the legacy pipeline shipped with: weights computed,\n"
+            "  printed and charted, but never applied. Every result produced now\n"
+            "  would be unweighted while claiming otherwise. Fix train.py first."
+            % (
+                script,
+                proof.get("matches_sklearn_balanced"),
+                proof["losses_differ"],
+                proof["weighted_matches_manual"],
+                proof["optimiser_step_differs"],
+            )
+        )
+    return {field: proof[field] for field in PROOF_FIELDS_FOR_RECORD if field in proof}
+
+
 def labels_by_idx_map(index, data_cfg: dict[str, Any] | None = None) -> dict[int, int]:
     """idx -> integer label in canonical class order."""
     data_cfg = data_cfg or load_data_config()
