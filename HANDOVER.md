@@ -38,8 +38,10 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `src/srpcard/aggregate.py` | `summary_cv.csv` and the other manuscript tables |
 | `src/srpcard/figures.py` | matplotlib-only figures, PDF + PNG |
 | `scripts/00_build_folds.py` … `scripts/07_bench_edge.py` | the eight scripts |
-| `notebooks/kaggle_runner.ipynb` | thin runner, 13 cells, no experiment logic |
-| `docs/KAGGLE_SETUP.md` | dataset upload, `DATA_ROOT`, session boundary, script order |
+| `notebooks/colab_runner.ipynb` | **the primary runner**, 19 cells, no experiment logic |
+| `docs/COLAB_SETUP.md` | Drive layout, dataset upload, the `artifacts/` symlink, CPU-runtime fallback |
+| `notebooks/kaggle_runner.ipynb` | thin runner, 13 cells, no experiment logic *(alternative platform)* |
+| `docs/KAGGLE_SETUP.md` | dataset upload, `DATA_ROOT`, session boundary, script order *(alternative platform)* |
 
 ### Generated, and committed
 
@@ -85,8 +87,11 @@ Strict. Later steps consume what earlier ones write.
 | 7 | `python scripts/06_export_figures.py` | — | skips figures whose inputs are absent, naming the script that makes them |
 | 8 | `python scripts/07_bench_edge.py …` | — | **Raspberry Pi, not Kaggle**; CPU only, refuses to run if CUDA is visible |
 
-Steps 1–7 run on Kaggle. Each is resumable; re-running a finished step prints
-`N already complete (skipped), 0 remaining` and exits.
+Steps 1–7 run on the GPU platform (§4). Each is resumable; re-running a finished
+step prints `N already complete (skipped), 0 remaining` and exits.
+
+Step 8 runs on **none** of the GPU platforms: `07_bench_edge.py` is CPU-only by
+design and refuses to run when CUDA is visible. It belongs on the Raspberry Pi.
 
 Step 6 is 5 fractions × 15 folds = **75 runs**, one draw each, 15 estimates per
 fraction. It was previously planned at 225 because `learning_curve.repeats: 3`
@@ -124,10 +129,41 @@ skip message, not a crash).
 
 ---
 
-## 4. Carrying results out of Kaggle
+## 4. Where this runs, and how results survive
 
-Kaggle sessions end after ~12 h. The registry is append-only and fsync'd after
-every completed run, so an interrupted session loses nothing.
+### 4.0 Platform
+
+**Free Google Colab is the primary path.** It needs a Google account and nothing
+else. `notebooks/colab_runner.ipynb` is the runner; `docs/COLAB_SETUP.md` is the
+setup guide.
+
+The alternatives were evaluated and rejected, and are documented rather than
+recommended:
+
+| platform | status | blocker |
+| --- | --- | --- |
+| **free Colab** | **primary** | — a Google account is enough |
+| Kaggle | documented alternative | GPU *and* Internet are gated behind account verification. `notebooks/kaggle_runner.ipynb` and `docs/KAGGLE_SETUP.md` are complete and current, and work as soon as an account is verified |
+| Google Cloud Free Trial | rejected | the trial billing account forbids attaching GPUs to VM instances and forbids quota-increase requests; new-account GPU quota is zero. The $300 credit needs a card, an upgrade and an approved quota request first |
+| RunPod | rejected | requires a $10 deposit |
+| Raspberry Pi | **required, for step 8 only** | `07_bench_edge.py` refuses to run when CUDA is visible. It runs on none of the platforms above |
+
+The two notebooks are the same shape and differ only where the platforms differ.
+The one difference that matters is how results survive:
+
+- **Colab** symlinks `artifacts/` into Drive, so `registry.jsonl` is written to
+  durable storage *as each run completes*. A dropped session costs at most the run
+  in flight, and the zip at the end is for git versioning only.
+- **Kaggle** stages everything in the container, so the last cell must be run
+  before the session ends or the session's work is lost.
+
+Free Colab's own limits — ~90 min idle disconnect, dynamic session length, and a
+dynamic GPU quota that silently drops you to a CPU runtime after heavy use — mean
+the two 75-run scripts take several sessions across several days. That is expected,
+and the registry resume is what makes it workable. `docs/COLAB_SETUP.md` §4 and §5
+cover both.
+
+Everything from §4.1 down is platform-independent.
 
 ### 4.1 First, run the preflight
 
@@ -221,12 +257,17 @@ revealed it.
 
 ### 4.5 Getting the results out
 
-**After every session, in order:**
+**On Colab**, Drive already holds everything the moment it is written, so this is
+about git history rather than survival: run the zip cell when you want to commit,
+not before the session ends. Missing it costs a commit, not a session's work.
 
-1. Run the last notebook cell (§5 of the notebook) even if the run was
-   interrupted. It copies `artifacts/` to `/kaggle/working/artifacts_out/` and
-   zips it to `artifacts_bundle.zip`.
-2. Download `artifacts_bundle.zip` from the output panel.
+**On Kaggle**, the zip cell *is* how the work survives, and it must be run before the
+session ends even if the script was interrupted.
+
+Either way, in order:
+
+1. Run the zip cell. It copies `artifacts/` plus `configs/arms.yaml` into a bundle.
+2. Download `artifacts_bundle.zip` and unpack it over your local checkout.
 3. Commit these:
 
 | file | when | why |
@@ -241,17 +282,19 @@ revealed it.
 | `artifacts/figures/*` | after step 7 | the figures |
 | `artifacts/edge_benchmark.json` | after step 8 | Pi results |
 
-4. Next session: **git is the primary resume path.** `artifacts/registry.jsonl`
-   has a `.gitignore` exception and is committed, so the fresh `git clone` in
-   notebook cell 1 brings it back and every script skips the runs it already
-   contains. Nothing has to be uploaded as a Kaggle Dataset. Cell 1 prints how
-   many completed runs the clone restored.
+4. Next session, resumption is automatic, by a different route on each platform:
 
-   **`RESUME_FROM` (notebook cell 3) is the documented fallback**, for when you
-   could not commit — no token to hand, a rejected push, a session that died
-   first. It restores `artifacts/` from a private Kaggle Dataset instead, and
-   those files overwrite the committed ones, so a stale dataset will hide newer
-   committed results. Leave it at `None` in the normal loop.
+   - **Colab:** Drive holds the live `artifacts/`. Cell 5 re-establishes the
+     symlink and prints how many completed runs the registry already has. Nothing
+     needs to have been committed for this to work.
+   - **Kaggle:** git is the resume path. `artifacts/registry.jsonl` has a
+     `.gitignore` exception and is committed, so the fresh `git clone` in cell 1
+     brings it back. `RESUME_FROM` (cell 3) is the documented fallback for when a
+     session's results could not be committed; it overwrites `artifacts/` from a
+     private Kaggle Dataset, so a stale one hides newer committed results.
+
+   Committing `registry.jsonl` is still worth doing on both: it is the versioned
+   record of what has been run, and on Kaggle it is the only one.
 
 **Never commit** model weights or `runs/` — both are gitignored and large.
 
@@ -290,6 +333,10 @@ python scripts/03_run_cv.py --arms yolo26n --repeat 0 --fold 0   # smoke test
 Every script takes `--dry-run` (except 00 and 07) and fails with a message naming
 the missing file when an input is absent. Scripts 01–05 also take
 `--allow-pretrained-fallback`; see §4.2 before you use it.
+
+Nothing in `src/srpcard/` or `configs/` knows which platform it is on. Both
+notebooks are adapters: they set `SRPCARD_DATA_ROOT`, arrange for `artifacts/` to
+be durable, and call the same scripts.
 
 Note: the one pre-existing registry record (the CPU smoke run) predates the
 `checkpoint_resolved` / `pretrained_fallback_used` fields and does not carry them.
