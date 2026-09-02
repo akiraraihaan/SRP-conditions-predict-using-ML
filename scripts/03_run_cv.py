@@ -28,7 +28,7 @@ from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import artifacts_dir, load_arms_config, load_data_config, resolve_data_root  # noqa: E402
 from srpcard.efficiency import profile  # noqa: E402
-from srpcard.models import ARM_NAMES, build_model  # noqa: E402
+from srpcard.models import ARM_NAMES, add_fallback_argument, build_model  # noqa: E402
 from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
 
 SCRIPT = "03_run_cv"
@@ -48,6 +48,7 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None, help="override epochs (smoke tests)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--quiet", action="store_true", help="suppress per-epoch lines")
+    add_fallback_argument(parser)
     args = parser.parse_args()
 
     data_cfg = load_data_config()
@@ -168,7 +169,21 @@ def main() -> int:
         )
 
         bundle = build_model(
-            spec["arm"], arms_cfg, data_cfg, with_efficiency=False, seed=spec["run_seed"]
+            spec["arm"],
+            arms_cfg,
+            data_cfg,
+            with_efficiency=False,
+            seed=spec["run_seed"],
+            allow_pretrained_fallback=args.allow_pretrained_fallback,
+        )
+        print(
+            "  checkpoint %s%s"
+            % (
+                bundle.checkpoint_resolved,
+                "  [FALLBACK -- NOT %s]" % spec["architecture"]
+                if bundle.pretrained_fallback_used
+                else "",
+            )
         )
         cfg = TrainConfig.from_arm(
             spec["arm"], arms_cfg, epochs=spec["epochs"], class_weights=spec["class_weights"]
@@ -218,6 +233,8 @@ def main() -> int:
             class_weights=spec["class_weights"],
             run_seed=spec["run_seed"],
             val_seed=spec["val_seed"],
+            checkpoint_resolved=bundle.checkpoint_resolved,
+            pretrained_fallback_used=bundle.pretrained_fallback_used,
             metrics=metrics,
             efficiency=efficiency,
             wall_time_s=wall,

@@ -40,7 +40,7 @@ from srpcard.config import (  # noqa: E402
     resolve_data_root,
 )
 from srpcard.efficiency import profile  # noqa: E402
-from srpcard.models import build_model  # noqa: E402
+from srpcard.models import add_fallback_argument, build_model  # noqa: E402
 from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
 
 SCRIPT = "04_run_ablation"
@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--device", default=None)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--analyse-only", action="store_true", help="skip training, just report")
+    add_fallback_argument(parser)
     args = parser.parse_args()
 
     data_cfg = load_data_config()
@@ -123,7 +124,12 @@ def main() -> int:
                 % (position, len(todo), arm, spec["repeat"], spec["fold"])
             )
             bundle = build_model(
-                arm, arms_cfg, data_cfg, with_efficiency=False, seed=spec["run_seed"]
+                arm,
+                arms_cfg,
+                data_cfg,
+                with_efficiency=False,
+                seed=spec["run_seed"],
+                allow_pretrained_fallback=args.allow_pretrained_fallback,
             )
             cfg = TrainConfig.from_arm(arm, arms_cfg, class_weights="none")
             started = time.perf_counter()
@@ -163,6 +169,8 @@ def main() -> int:
                     class_weights="none",
                     run_seed=spec["run_seed"],
                     val_seed=spec["val_seed"],
+                    checkpoint_resolved=bundle.checkpoint_resolved,
+                    pretrained_fallback_used=bundle.pretrained_fallback_used,
                     metrics=metrics,
                     efficiency=efficiency,
                     wall_time_s=wall,

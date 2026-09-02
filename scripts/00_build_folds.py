@@ -6,7 +6,11 @@ index and verifies it against the committed copy, and refuses to overwrite a
 folds.json that already exists, because folds.json is a frozen input.
 
     python scripts/00_build_folds.py
+    python scripts/00_build_folds.py --preflight-only
 
+Phase 0  preflight: environment, DATA_ROOT, committed artefacts, pretrained
+         checkpoints for all five arms. Nothing here trains, and nothing here
+         raises -- it reports, and the script exits non-zero if it failed.
 Phase 1  image index, class normalisation, conflict groups, count asserts
 Phase 2  legacy development split (raw 695) + distribution assert
 Phase 2b legacy cross-references (skipped when the legacy directory is absent)
@@ -24,17 +28,269 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from srpcard import data as srp_data  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
-from srpcard import legacy_audit, legacy_split  # noqa: E402
+from srpcard import legacy_audit, legacy_split, models  # noqa: E402
 from srpcard.config import (  # noqa: E402
     artifacts_dir,
+    library_versions,
     load_data_config,
     load_folds_config,
     resolve_data_root,
+    set_seed,
 )
 
 
 def rule(title: str) -> None:
     print("\n" + "=" * 74 + "\n" + title + "\n" + "=" * 74)
+
+
+# --------------------------------------------------------------------------
+# phase 0 -- preflight
+# --------------------------------------------------------------------------
+
+PREFLIGHT_SEED = 0
+
+
+def _preflight_environment() -> tuple[bool, dict]:
+    """GPU, torch/CUDA versions, and whether cudnn.deterministic actually took."""
+    print("\n-- environment ------------------------------------------------------")
+    versions = library_versions()
+    print("  python             : %s" % versions.get("python"))
+    print("  platform           : %s" % versions.get("platform"))
+    for name in ("torch", "torchvision", "ultralytics", "numpy", "sklearn"):
+        print("  %-18s : %s" % (name, versions.get(name)))
+    print("  torch.version.cuda : %s" % versions.get("torch_cuda"))
+    print("  cuda available     : %s" % versions.get("cuda_available"))
+    print("  gpu                : %s" % versions.get("gpu", "-- none visible --"))
+
+    status = set_seed(PREFLIGHT_SEED)
+    print("\n  determinism probe (set_seed(%d)):" % PREFLIGHT_SEED)
+    for key in (
+        "cudnn_deterministic",
+        "cudnn_benchmark",
+        "use_deterministic_algorithms",
+        "cublas_workspace_config",
+    ):
+        print("    %-30s %s" % (key, status.get(key, "n/a")))
+
+    ok = True
+    if versions.get("cuda_available") != "True":
+        print(
+            "\n  [WARNING] no CUDA device visible. Training falls back to CPU and takes\n"
+            "            roughly an order of magnitude longer. On Kaggle:\n"
+            "            Settings -> Accelerator -> GPU T4 x2 (or P100)."
+        )
+    if versions.get("torch") != "not-installed" and status.get("cudnn_deterministic") is not True:
+        print("  [FAIL] cudnn.deterministic did NOT take effect")
+        ok = False
+    return ok, {"versions": versions, "determinism": status}
+
+
+def _preflight_data_root(cfg: dict) -> tuple[bool, dict]:
+    """Resolve DATA_ROOT and count what is actually on disk, per class."""
+    print("\n-- DATA_ROOT --------------------------------------------------------")
+    try:
+        data_root = resolve_data_root(cfg)
+    except Exception as exc:  # noqa: BLE001 - reported here, raised properly in phase 1
+        print("  [FAIL] %s" % exc)
+        return False, {"resolved": None, "error": str(exc)}
+
+    print("  resolved to        : %s" % data_root)
+    try:
+        grouped = srp_data.discover_class_dirs(data_root, cfg, verbose=True)
+    except Exception as exc:  # noqa: BLE001
+        print("  [FAIL] %s" % exc)
+        return False, {"resolved": str(data_root), "error": str(exc)}
+
+    extensions = {e.lower() for e in cfg["image_extensions"]}
+    expected = cfg["expected_counts"]
+    found = {
+        name: len(srp_data.list_class_files(grouped[name], extensions)) for name in cfg["classes"]
+    }
+
+    print("\n  %-45s %8s %9s %7s" % ("class", "found", "expected", "delta"))
+    ok = True
+    for name in cfg["classes"]:
+        delta = found[name] - int(expected[name])
+        if delta:
+            ok = False
+        print(
+            "  %-45s %8d %9d %7s"
+            % (name, found[name], expected[name], "" if delta == 0 else "%+d" % delta)
+        )
+    total, want_total = sum(found.values()), int(cfg["expected_total"])
+    if total != want_total:
+        ok = False
+    print(
+        "  %-45s %8d %9d %7s"
+        % ("TOTAL", total, want_total, "" if total == want_total else "%+d" % (total - want_total))
+    )
+    if not ok:
+        print(
+            "\n  [FAIL] the images on disk do not match configs/data.yaml:expected_counts.\n"
+            "         Phase 1 raises on this. Check that DATA_ROOT points at the 10\n"
+            "         class directories and that the dataset upload is complete."
+        )
+    return ok, {"resolved": str(data_root), "found": found, "total": total}
+
+
+def _preflight_artefacts(cfg: dict) -> tuple[bool, dict]:
+    """Verify the COMMITTED artefacts against their fingerprints, not just presence.
+
+    This is the check that catches a fresh `git clone` whose committed artefacts
+    disagree with one another: a folds.json built from a different image_index.csv,
+    or a dev_split.json indexing rows that no longer exist.
+    """
+    print("\n-- committed artefacts ----------------------------------------------")
+    art = artifacts_dir(cfg)
+    paths = {
+        "image_index.csv": art / "image_index.csv",
+        "dev_split.json": art / "dev_split.json",
+        "folds.json": art / "folds.json",
+    }
+    ok = True
+    for name, path in paths.items():
+        present = path.exists()
+        size = ("%9.1f KB" % (path.stat().st_size / 1024)) if present else ("%9s" % "-")
+        print("  [%-7s] %-18s %s" % ("ok" if present else "MISSING", name, size))
+        ok = ok and present
+    if not ok:
+        print("  [FAIL] a committed artefact is absent; fingerprints cannot be checked.")
+        return False, {"present": False}
+
+    detail: dict = {"present": True}
+    try:
+        index = srp_data.load_image_index(paths["image_index.csv"])
+    except Exception as exc:  # noqa: BLE001
+        print("  [FAIL] image_index.csv did not load: %s" % exc)
+        return False, detail
+    print(
+        "\n  image_index.csv    : %d rows, %d excluded, %d classes"
+        % (len(index), int(index["excluded"].astype(bool).sum()), index["class"].nunique())
+    )
+
+    current = srp_folds.corpus_fingerprint(index, paths["image_index.csv"])
+    payload = srp_folds.load_folds(path=paths["folds.json"], verify=False)
+    stored = payload.get("corpus") or {}
+    print("\n  folds.json corpus fingerprint vs the committed image_index.csv:")
+    print(
+        "    %-32s %-42s %-42s %s"
+        % ("field", "in folds.json", "computed now", "verdict")
+    )
+    for key in (
+        "n",
+        "excluded_n",
+        "conflict_groups",
+        "sha1_of_sorted_included_sha1s",
+        "built_from_index",
+    ):
+        want, got = stored.get(key), current.get(key)
+        agree = want == got
+        ok = ok and agree
+        print(
+            "    %-32s %-42s %-42s %s"
+            % (key, want, got, "ok" if agree else "MISMATCH")
+        )
+    print("    %-32s %d" % ("folds recorded", len(payload.get("folds", []))))
+
+    try:
+        split = legacy_split.load_dev_split(paths["dev_split.json"])
+    except Exception as exc:  # noqa: BLE001
+        print("  [FAIL] dev_split.json did not load: %s" % exc)
+        return False, detail
+
+    counts = {name: len(split[name]) for name in ("train", "val", "test")}
+    all_idx = [int(i) for i in split["train"] + split["val"] + split["test"]]
+    n_rows = len(index)
+    out_of_range = [i for i in all_idx if not 0 <= i < n_rows]
+    duplicated = len(all_idx) - len(set(all_idx))
+    print(
+        "\n  dev_split.json     : train %d  val %d  test %d  (total %d of %d index rows)"
+        % (counts["train"], counts["val"], counts["test"], len(all_idx), n_rows)
+    )
+    if out_of_range:
+        ok = False
+        print("    [FAIL] %d index(es) outside 0..%d" % (len(out_of_range), n_rows - 1))
+    if duplicated:
+        ok = False
+        print("    [FAIL] %d index(es) appear in more than one partition" % duplicated)
+    if len(all_idx) != n_rows:
+        ok = False
+        print("    [FAIL] the split does not cover all %d rows of image_index.csv" % n_rows)
+    if not out_of_range and not duplicated and len(all_idx) == n_rows:
+        print("    partitions disjoint, exhaustive and in range  ok")
+
+    detail.update({"fingerprint_stored": stored, "fingerprint_now": current, "dev": counts})
+    return ok, detail
+
+
+def _preflight_checkpoints(cfg: dict) -> tuple[bool, dict]:
+    """Resolve -- and actually load -- the pretrained checkpoint of all five arms."""
+    print("\n-- pretrained checkpoints -------------------------------------------")
+    print(
+        "  Loading each arm's declared checkpoint now, so a missing YOLO26 file\n"
+        "  surfaces in minute one rather than after 40 runs. On Kaggle this triggers\n"
+        "  the download, which is exactly what is being tested.\n"
+    )
+    results = models.preflight_pretrained(data_cfg=cfg)
+    header = ("arm", "declared architecture", "acquired", "checkpoint resolved", "status")
+    print("  %-18s %-22s %-11s %-30s %s" % header)
+    ok = True
+    for record in results:
+        ok = ok and record["status"] == "ok"
+        print(
+            "  %-18s %-22s %-11s %-30s %s"
+            % (
+                record["arm"],
+                record["architecture"],
+                record["acquisition"],
+                record["checkpoint_resolved"] or "-",
+                record["status"],
+            )
+        )
+    for record in [r for r in results if r["status"] != "ok"]:
+        print("\n  [FAIL] %s (%s)" % (record["arm"], record["architecture"]))
+        print("         expected : %s" % record["expected"])
+        print("         error    : %s" % record["error"])
+        if record["declared_fallback"]:
+            print(
+                "         configs/arms.yaml offers the fallback %s, which is a\n"
+                "         DIFFERENT ARCHITECTURE. It is NOT taken automatically: every\n"
+                "         script refuses unless --allow-pretrained-fallback is passed,\n"
+                "         and flags pretrained_fallback_used in the registry when it is."
+                % record["declared_fallback"]
+            )
+    return ok, {"arms": results}
+
+
+def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
+    """Everything that should fail in minute one rather than in hour six.
+
+    Never raises: each section reports ok / FAIL and the verdict is returned, so
+    one broken section still lets the rest of the report print. main() exits
+    non-zero when the verdict is False.
+    """
+    rule("PHASE 0 -- preflight")
+    verdicts: dict[str, bool] = {}
+    verdicts["environment"], _ = _preflight_environment()
+    verdicts["data_root"], _ = _preflight_data_root(cfg)
+    verdicts["artefacts"], _ = _preflight_artefacts(cfg)
+    if skip_checkpoints:
+        print("\n-- pretrained checkpoints -------------------------------------------")
+        print("  skipped -- --skip-checkpoint-preflight")
+    else:
+        verdicts["checkpoints"], _ = _preflight_checkpoints(cfg)
+
+    print("\n-- preflight verdict ------------------------------------------------")
+    for name, good in verdicts.items():
+        print("  %-14s %s" % (name, "ok" if good else "FAIL"))
+    passed = all(verdicts.values())
+    if not passed:
+        print(
+            "\n  PREFLIGHT FAILED. The rest of this script still runs so you get the\n"
+            "  full report, but it exits non-zero. Do not start scripts 01-05 until\n"
+            "  every line above reads ok."
+        )
+    return passed
 
 
 # --------------------------------------------------------------------------
@@ -320,9 +576,37 @@ def main() -> int:
         action="store_true",
         help="skip phase 2b even when the legacy reference directory is present",
     )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="skip phase 0 entirely",
+    )
+    parser.add_argument(
+        "--skip-checkpoint-preflight",
+        action="store_true",
+        help="run phase 0 but do not load the five pretrained checkpoints (no downloads)",
+    )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="run phase 0 and stop -- the fastest way to validate a fresh Kaggle session",
+    )
     args = parser.parse_args()
 
     cfg = load_data_config()
+
+    preflight_ok = True
+    if args.skip_preflight:
+        rule("PHASE 0 -- preflight")
+        print("skipped -- --skip-preflight")
+    else:
+        preflight_ok = phase_0_preflight(
+            cfg, skip_checkpoints=args.skip_checkpoint_preflight
+        )
+    if args.preflight_only:
+        rule("DONE -- phase 0 only")
+        return 0 if preflight_ok else 1
+
     index = phase_1_image_index(cfg, force=args.force)
     dev_split = phase_2_dev_split(cfg, index)
 
@@ -337,8 +621,14 @@ def main() -> int:
 
     phase_3_folds(cfg, index, rebuild=args.rebuild_folds)
 
-    rule("DONE -- phases 1, 2, 2b and 3")
+    rule("DONE -- phases 0, 1, 2, 2b and 3")
     print("artifacts/folds.json is frozen from here on. Next: registry, train, evaluate.")
+    if not preflight_ok:
+        print(
+            "\nEXIT 1: phase 0 reported at least one failure. Scroll up to the\n"
+            "        'preflight verdict' block. Do not start scripts 01-05 yet."
+        )
+        return 1
     return 0
 
 

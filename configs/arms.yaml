@@ -156,4 +156,9 @@ ablation:
 learning_curve:
   arm: yolo26n       # under the FINAL locked config, not the old reference one
   fractions: [0.2, 0.4, 0.6, 0.8, 1.0]
-  repeats: 3
+  # NO `repeats` key, deliberately. 5 fractions x 15 folds = 75 runs, which is
+  # 15 estimates per fraction. The 15 folds ALREADY are 3 repeats of 5-fold CV,
+  # so a `repeats: 3` here multiplied them again to 225 runs -- three times the
+  # size of the main experiment (75) for a supporting analysis -- and the extra
+  # draws resample the same 15 partitions rather than adding independent
+  # information. 05_learning_curve.py raises if this key reappears.

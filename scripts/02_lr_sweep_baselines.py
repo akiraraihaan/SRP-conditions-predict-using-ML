@@ -38,7 +38,7 @@ from srpcard.config import (  # noqa: E402
 )
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.legacy_split import load_dev_split  # noqa: E402
-from srpcard.models import build_model  # noqa: E402
+from srpcard.models import add_fallback_argument, build_model  # noqa: E402
 from srpcard.train import ImageCache, TrainConfig, labels_by_idx_map, train_fold  # noqa: E402
 
 SCRIPT = "02_lr_sweep_baselines"
@@ -88,6 +88,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--device", default=None)
     parser.add_argument("--quiet", action="store_true")
+    add_fallback_argument(parser)
     args = parser.parse_args()
 
     data_cfg = load_data_config()
@@ -144,7 +145,12 @@ def main() -> int:
     for position, spec in enumerate(todo, 1):
         rule("run %d/%d  %s  lr %g" % (position, len(todo), spec["arm"], spec["lr"]))
         bundle = build_model(
-            spec["arm"], arms_cfg, data_cfg, with_efficiency=False, seed=DEV_SEED
+            spec["arm"],
+            arms_cfg,
+            data_cfg,
+            with_efficiency=False,
+            seed=DEV_SEED,
+            allow_pretrained_fallback=args.allow_pretrained_fallback,
         )
         cfg = TrainConfig.from_arm(
             spec["arm"],
@@ -214,6 +220,8 @@ def main() -> int:
                 class_weights=spec["class_weights"],
                 run_seed=DEV_SEED,
                 val_seed=None,
+                checkpoint_resolved=bundle.checkpoint_resolved,
+                pretrained_fallback_used=bundle.pretrained_fallback_used,
                 metrics=test_metrics,
                 efficiency=efficiency,
                 wall_time_s=wall,

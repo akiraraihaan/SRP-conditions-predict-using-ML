@@ -48,3 +48,15 @@ artifacts/*
 # any artefact that is meant to be REVIEWED must be committed, not merely generated
 !artifacts/folds_report.md
 !artifacts/legacy_contamination.json
+# the 46 completed legacy grid configurations. Script 01 recomputes the argmax
+# over all 18 medium configs and needs these on Kaggle, where the legacy
+# reference directory ../FINAL-pipeline does not exist and cannot be re-read.
+!artifacts/legacy_grid_metrics.csv
+# per-image predictions behind legacy cross-reference 2; quoted in the paper and
+# not reproducible without the legacy weights
+!artifacts/legacy_test_predictions.csv
+# THE RESUME PATH. git is PRIMARY: commit registry.jsonl at the end of every
+# Kaggle session, and the next session's `git clone` restores it, so every
+# script skips the runs it already contains. RESUME_FROM in the notebook is the
+# documented fallback, not the normal route. See HANDOVER.md section 4.
+!artifacts/registry.jsonl

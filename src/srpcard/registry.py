@@ -99,13 +99,22 @@ def build_record(
     class_weights: str,
     run_seed: int,
     val_seed: int | None,
+    checkpoint_resolved: str,
+    pretrained_fallback_used: bool,
     metrics: dict[str, Any],
     efficiency: dict[str, Any],
     wall_time_s: float,
     determinism_status: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble one registry record. Every field the brief asks for is present."""
+    """Assemble one registry record. Every field the brief asks for is present.
+
+    `checkpoint_resolved` and `pretrained_fallback_used` are REQUIRED, not
+    optional: they record which pretrained weights the run actually loaded, so a
+    YOLO11 fallback silently standing in for a YOLO26 arm is visible in the
+    record itself rather than only in a console line nobody kept. See
+    src/srpcard/models.py.
+    """
     return {
         "run_id": run_id,
         "script": script,
@@ -120,6 +129,9 @@ def build_record(
         "class_weights": class_weights,
         "run_seed": run_seed,
         "val_seed": val_seed,
+        # --- what was actually loaded, not what was requested ---
+        "checkpoint_resolved": checkpoint_resolved,
+        "pretrained_fallback_used": bool(pretrained_fallback_used),
         # --- quality ---
         "f1_macro": metrics.get("f1_macro"),
         "accuracy": metrics.get("accuracy"),
@@ -177,4 +189,15 @@ def summarise(path: Path | None = None) -> dict[str, Any]:
     for record in records:
         by_script[record.get("script", "?")] = by_script.get(record.get("script", "?"), 0) + 1
         by_arm[record.get("arm", "?")] = by_arm.get(record.get("arm", "?"), 0) + 1
-    return {"n_records": len(records), "by_script": by_script, "by_arm": by_arm}
+    fallback = sorted(
+        {record.get("arm", "?") for record in records if record.get("pretrained_fallback_used")}
+    )
+    return {
+        "n_records": len(records),
+        "by_script": by_script,
+        "by_arm": by_arm,
+        "n_pretrained_fallback": sum(
+            1 for record in records if record.get("pretrained_fallback_used")
+        ),
+        "arms_with_pretrained_fallback": fallback,
+    }

@@ -62,6 +62,12 @@ from srpcard.config import (  # noqa: E402
     set_seed,
 )
 from srpcard.legacy_split import load_dev_split  # noqa: E402
+from srpcard.models import (  # noqa: E402
+    _resolve_pretrained,
+    add_fallback_argument,
+    assert_checkpoint_matches_architecture,
+    warn_fallback_banner,
+)
 
 SCRIPT = "01_complete_medium_grid"
 LEGACY_SEED = 42
@@ -203,6 +209,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--device", default=None, help="cuda | cpu (default: ultralytics auto)")
     parser.add_argument("--keep-dataset", action="store_true", help="do not delete the temp tree")
+    add_fallback_argument(parser)
     args = parser.parse_args()
 
     data_cfg = load_data_config()
@@ -289,8 +296,6 @@ def main() -> int:
 
     from ultralytics import YOLO
 
-    from srpcard.models import _resolve_pretrained
-
     for position, spec in enumerate(todo, 1):
         rule("run %d/%d  %s" % (position, len(todo), spec["key"]))
         set_seed(LEGACY_SEED)
@@ -300,10 +305,38 @@ def main() -> int:
             spec["batch"],
             spec["lr"],
         )
-        weights_name = _resolve_pretrained("%s.pt" % spec["architecture"], data_cfg)
+        architecture = spec["architecture"]
+        checkpoint_filename = "%s.pt" % architecture
+        weights_name = _resolve_pretrained(checkpoint_filename, data_cfg)
+        fallback_used = False
         started = time.perf_counter()
 
-        model = YOLO(weights_name)
+        # Same guard as src/srpcard/models.py: this script loads the checkpoint
+        # directly rather than through build_model, so the check is repeated here
+        # instead of being inherited. A YOLO11 checkpoint standing in for a YOLO26
+        # arm would change the architecture behind every number in the grid table.
+        try:
+            model = YOLO(weights_name)
+        except Exception as exc:  # noqa: BLE001
+            fallback = arms_cfg["arms"][ARM].get("pretrained_fallback")
+            if not fallback or not args.allow_pretrained_fallback:
+                raise MissingInputError(
+                    "Pretrained checkpoint %r for arm %r could not be loaded: %s\n"
+                    "  declared architecture : %s\n"
+                    "  configured fallback   : %s\n"
+                    "  Refusing to fall back: it would silently change the\n"
+                    "  architecture of every configuration in the medium grid.\n"
+                    "  Make %s available, or pass --allow-pretrained-fallback."
+                    % (weights_name, ARM, exc, architecture, fallback,
+                       checkpoint_filename)
+                ) from exc
+            weights_name = _resolve_pretrained(fallback, data_cfg)
+            model = YOLO(weights_name)
+            fallback_used = True
+            print(warn_fallback_banner(ARM, architecture, weights_name))
+        else:
+            assert_checkpoint_matches_architecture(ARM, architecture, weights_name)
+
         model.train(
             data=str(dataset_root),
             epochs=spec["epochs"],
@@ -351,6 +384,8 @@ def main() -> int:
             class_weights="none_legacy_bug",
             run_seed=LEGACY_SEED,
             val_seed=None,
+            checkpoint_resolved=Path(weights_name).name,
+            pretrained_fallback_used=fallback_used,
             metrics=test_metrics,
             efficiency={"size_mb": size_mb},
             wall_time_s=wall,

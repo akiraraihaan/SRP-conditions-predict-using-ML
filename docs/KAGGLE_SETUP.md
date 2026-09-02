@@ -120,9 +120,11 @@ python scripts/00_build_folds.py
    - **Internet: On** — required to clone the repository and let ultralytics
      download pretrained checkpoints.
    - **Persistence**: leave off; `artifacts/` is carried out explicitly instead.
-5. Set `REPO_URL` in cell 1. For a private repository use a token:
-   `https://<token>@github.com/<user>/extra-deep.git`, and prefer a Kaggle Secret
-   over pasting the token into the notebook.
+5. `REPO_URL` in cell 1 is already set to
+   `https://github.com/akiraraihaan/SRP-conditions-predict-using-ML.git`. For a
+   private repository use a token:
+   `https://<token>@github.com/akiraraihaan/SRP-conditions-predict-using-ML.git`,
+   and prefer a Kaggle Secret over pasting the token into the notebook.
 
 ---
 
@@ -139,8 +141,12 @@ The loop is:
 3. Download `artifacts_bundle.zip` from the output panel.
 4. Commit `artifacts/registry.jsonl` — and `configs/arms.yaml` if scripts 01 or 02
    changed it.
-5. Next session: either commit the registry and let the clone bring it in, or
-   upload `artifacts/` as a small private dataset and set `RESUME_FROM` in cell 3.
+5. Next session: **git is the primary resume path.** `registry.jsonl` is committed
+   (it has a `.gitignore` exception), so the clone in cell 1 brings it back and the
+   scripts skip what is already done. Nothing needs uploading as a Dataset.
+   `RESUME_FROM` in cell 3 is the **fallback**, for when a session's results could
+   not be committed; it overwrites `artifacts/` from a private Dataset, so a stale
+   one hides newer committed results.
 
 Re-running a completed script is safe and cheap: it prints
 `N already complete (skipped), 0 remaining` and exits.
@@ -151,12 +157,12 @@ Re-running a completed script is safe and cheap: it prints
 
 | order | script | runs | writes back to `configs/arms.yaml` |
 | ---: | --- | ---: | --- |
-| 1 | `00_build_folds.py` | — | no |
+| 1 | `00_build_folds.py` | — | no — runs the phase 0 preflight first |
 | 2 | `01_complete_medium_grid.py` | 8 | **yes** — `yolo26m` epochs/batch/lr |
 | 3 | `02_lr_sweep_baselines.py` | 6 | **yes** — both baselines' `lr` |
 | 4 | `03_run_cv.py` | 75 | no |
 | 5 | `04_run_ablation.py` | 15 | no |
-| 6 | `05_learning_curve.py` | 225 | no |
+| 6 | `05_learning_curve.py` | 75 | no |
 | 7 | `06_export_figures.py` | — | no |
 
 **Commit `configs/arms.yaml` after steps 2 and 3.** The next session clones the
@@ -166,6 +172,23 @@ baselines (`lr: null`).
 
 `07_bench_edge.py` does **not** run on Kaggle. It is standalone, CPU-only, and
 belongs on the Raspberry Pi.
+
+### Preflight, first thing in every session
+
+`00_build_folds.py` opens with a preflight that reports the GPU and torch/CUDA
+versions, whether `cudnn.deterministic` took effect, the resolved DATA_ROOT and the
+per-class counts actually found, whether the committed artefacts still match their
+fingerprints, and whether all five arms' pretrained checkpoints load. It exits
+non-zero if any of that failed. `--preflight-only` runs just that part.
+
+### `--allow-pretrained-fallback`
+
+Each YOLO arm declares a YOLO11 `pretrained_fallback`. It is never taken
+automatically: a run that trained YOLO11 while every table said YOLO26 could not be
+detected afterwards. If the YOLO26 checkpoint cannot be loaded, scripts 01–05
+refuse and name both architectures. Passing `--allow-pretrained-fallback` permits
+the substitution, prints a loud banner, and sets `pretrained_fallback_used` on
+every affected registry record. Do not pass it to get a session unstuck.
 
 ---
 
