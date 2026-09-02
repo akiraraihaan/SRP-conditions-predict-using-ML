@@ -55,6 +55,14 @@ artifacts/*
 # per-image predictions behind legacy cross-reference 2; quoted in the paper and
 # not reproducible without the legacy weights
 !artifacts/legacy_test_predictions.csv
+# The resolved hyperparameters, snapshotted by scripts 01 and 02 immediately
+# after they rewrite configs/arms.yaml. epochs/batch/lr feed the run_id hash, so
+# losing them between sessions silently retrains folds under the old config.
+# On Colab artifacts/ is a symlink into Drive and this survives a dropped session;
+# committing it makes the same recovery work from a bare clone.
+# Restore with: python scripts/restore_arms.py
+!artifacts/resolved_arms.yaml
+
 # THE RESUME PATH. git is PRIMARY: commit registry.jsonl at the end of every
 # Kaggle session, and the next session's `git clone` restores it, so every
 # script skips the runs it already contains. RESUME_FROM in the notebook is the

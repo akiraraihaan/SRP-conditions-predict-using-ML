@@ -161,6 +161,10 @@ def main() -> int:
               % (len(specs), len(entries), len(fractions)))
         return 0
 
+    registry.assert_arms_match_registry(
+        script=SCRIPT, arms=[arm], arms_cfg=arms_cfg, split_kind="cv"
+    )
+
     weights_proof = require_class_weights_verified(
         int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
     )

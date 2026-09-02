@@ -136,6 +136,145 @@ def resolve_data_root(cfg: dict[str, Any] | None = None, *, verbose: bool = True
 
 
 # --------------------------------------------------------------------------
+# the resolved-hyperparameter snapshot
+# --------------------------------------------------------------------------
+#
+# configs/arms.yaml is rewritten by scripts 01 and 02 with the hyperparameters
+# they select. On Colab that file lives in the clone and dies with the session,
+# while artifacts/ is a symlink into Drive -- so the snapshot below is written
+# there and survives, even if the session ends before arms.yaml is committed.
+#
+# This matters more than convenience. epochs, batch and lr feed the run_id hash
+# (registry.RUN_ID_FIELDS). A clone carrying the PROVISIONAL yolo26m config after
+# a dropped session computes DIFFERENT run_ids, so nothing is skipped, all 15
+# folds are retrained under the old settings, and the registry ends up holding
+# two hyperparameter regimes for one arm. See registry.assert_config_matches_registry.
+
+ARMS_SNAPSHOT_NAME = "resolved_arms.yaml"
+
+# The fields that feed the run_id hash, and therefore the ones a drift is
+# dangerous in rather than merely untidy.
+RUN_DEFINING_HYPERPARAMETERS = ("epochs", "batch", "lr")
+
+SNAPSHOT_MARKER = "# ==== BEGIN VERBATIM COPY OF configs/arms.yaml ===="
+
+
+def arms_path() -> Path:
+    return CONFIGS_DIR / "arms.yaml"
+
+
+def resolved_arms_path(cfg: dict[str, Any] | None = None) -> Path:
+    return artifacts_dir(cfg) / ARMS_SNAPSHOT_NAME
+
+
+def snapshot_arms(resolved_by: str, cfg: dict[str, Any] | None = None) -> Path:
+    """Write artifacts/resolved_arms.yaml: a header, then arms.yaml verbatim.
+
+    Called by scripts 01 and 02 immediately after they rewrite arms.yaml. The
+    header is YAML comments, so the snapshot parses as the same document the
+    original does and can be compared with it by loading both.
+    """
+    from datetime import datetime, timezone
+
+    source = arms_path()
+    target = resolved_arms_path(cfg)
+    header = [
+        "# artifacts/%s -- GENERATED SNAPSHOT. Do not edit by hand." % ARMS_SNAPSHOT_NAME,
+        "#",
+        "# Written by  : %s" % resolved_by,
+        "# At          : %s" % datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "# Git commit  : %s" % git_commit(),
+        "#",
+        "# A full snapshot of configs/arms.yaml as it stood after the resolving script",
+        "# wrote its results back. configs/arms.yaml lives in the clone and dies with",
+        "# the session; artifacts/ is the Drive symlink, so this copy survives.",
+        "#",
+        "# Restore it over configs/arms.yaml in a fresh clone with:",
+        "#     python scripts/restore_arms.py",
+        "#",
+        SNAPSHOT_MARKER,
+    ]
+    body = source.read_text(encoding="utf-8")
+    target.write_text("\n".join(header) + "\n" + body, encoding="utf-8", newline="\n")
+    return target
+
+
+def snapshot_body(path: Path) -> str:
+    """The verbatim arms.yaml text inside a snapshot, header stripped."""
+    text = Path(path).read_text(encoding="utf-8")
+    if SNAPSHOT_MARKER in text:
+        return text.split(SNAPSHOT_MARKER, 1)[1].lstrip("\n")
+    return text
+
+
+def arm_hyperparameters(arms_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """{arm: {epochs, batch, lr}} -- just the run-id-defining fields."""
+    return {
+        name: {field: arm.get(field) for field in RUN_DEFINING_HYPERPARAMETERS}
+        for name, arm in (arms_cfg.get("arms") or {}).items()
+    }
+
+
+def compare_arms_configs(
+    left: dict[str, Any], right: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Per-arm differences in epochs/batch/lr between two loaded arms configs."""
+    left_hp, right_hp = arm_hyperparameters(left), arm_hyperparameters(right)
+    differences = []
+    for name in sorted(set(left_hp) | set(right_hp)):
+        a, b = left_hp.get(name), right_hp.get(name)
+        if a != b:
+            differences.append({"arm": name, "left": a, "right": b})
+    return differences
+
+
+def unresolved_arms(arms_cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """Arms whose hyperparameters are not settled yet.
+
+    `lr_null`   -- 02_lr_sweep_baselines.py has not run, or its result was lost.
+    `provisional` -- 01_complete_medium_grid.py has not run, or its result was lost.
+    """
+    arms_cfg = arms_cfg or load_arms_config()
+    null_lr, provisional = [], []
+    for name, arm in (arms_cfg.get("arms") or {}).items():
+        if arm.get("lr") is None:
+            null_lr.append(name)
+        if arm.get("provisional"):
+            provisional.append(name)
+    return {"lr_null": sorted(null_lr), "provisional": sorted(provisional)}
+
+
+def arms_snapshot_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Does a snapshot exist, and does it still agree with configs/arms.yaml?
+
+    A snapshot that DIFFERS is the signature of a config lost between sessions:
+    the snapshot holds what a resolving script decided, and the clone's
+    arms.yaml has reverted to what was committed.
+    """
+    target = resolved_arms_path(cfg)
+    status: dict[str, Any] = {"path": str(target), "exists": target.exists()}
+    if not target.exists():
+        return status
+
+    live = load_yaml(arms_path())
+    snapshot = load_yaml(target)
+    # left = what configs/arms.yaml says NOW, right = what the snapshot resolved to.
+    # Callers print them in that order; do not swap them.
+    differences = compare_arms_configs(live, snapshot)
+    status["differs"] = bool(differences)
+    status["differences"] = differences
+    status["resolved_by"] = None
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# Written by"):
+            status["resolved_by"] = line.split(":", 1)[1].strip()
+        if line.startswith("# At"):
+            status["written_at"] = line.split(":", 1)[1].strip()
+        if line.startswith(SNAPSHOT_MARKER):
+            break
+    return status
+
+
+# --------------------------------------------------------------------------
 # seeding
 # --------------------------------------------------------------------------
 

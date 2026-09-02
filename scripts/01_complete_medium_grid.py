@@ -55,6 +55,7 @@ from srpcard import registry  # noqa: E402
 from srpcard.config import (  # noqa: E402
     MissingInputError,
     artifacts_dir,
+    snapshot_arms,
     load_arms_config,
     load_data_config,
     require_file,
@@ -485,6 +486,12 @@ def main() -> int:
         int(winner["epochs"]), int(winner["batch"]), float(winner["lr"]),
         winner["key"], float(winner["f1_macro_val"]),
     )
+    # Snapshot the resolved config into artifacts/, which on Colab is a symlink
+    # into Drive. configs/arms.yaml lives in the clone and dies with the session;
+    # this copy is what scripts/restore_arms.py puts back in a fresh clone.
+    snapshot = snapshot_arms(SCRIPT, data_cfg)
+    print("[arms.yaml] snapshotted to %s" % snapshot)
+    print("            recover it in a fresh clone with: python scripts/restore_arms.py")
     print("[artifacts] wrote %s" % out_csv)
 
     if todo and not args.keep_dataset and dataset_root.exists():

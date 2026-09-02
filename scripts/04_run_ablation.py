@@ -117,6 +117,10 @@ def main() -> int:
             print("  TODO %s  r%df%d" % (spec["run_id"], spec["repeat"], spec["fold"]))
         return 0
 
+    registry.assert_arms_match_registry(
+        script=SCRIPT, arms=[arm], arms_cfg=arms_cfg, split_kind="cv"
+    )
+
     # Run even though THIS script trains unweighted: the ablation only means
     # something if the weighting it removes demonstrably works in the first place.
     weights_proof = require_class_weights_verified(

@@ -33,6 +33,7 @@ from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import (  # noqa: E402
     artifacts_dir,
+    snapshot_arms,
     load_arms_config,
     load_data_config,
     resolve_data_root,
@@ -299,6 +300,13 @@ def main() -> int:
             % (arm, winner["lr"], winner["f1_macro_val"])
         )
         write_back_lr(arm, float(winner["lr"]), float(winner["f1_macro_val"]))
+
+    # Snapshot the resolved config into artifacts/, which on Colab is a symlink
+    # into Drive. configs/arms.yaml lives in the clone and dies with the session;
+    # this copy is what scripts/restore_arms.py puts back in a fresh clone.
+    snapshot = snapshot_arms(SCRIPT, data_cfg)
+    print("\n[arms.yaml] snapshotted to %s" % snapshot)
+    print("            recover it in a fresh clone with: python scripts/restore_arms.py")
 
     print("\n[artifacts] wrote %s" % out_csv)
     return 0

@@ -38,6 +38,7 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `src/srpcard/aggregate.py` | `summary_cv.csv` and the other manuscript tables |
 | `src/srpcard/figures.py` | matplotlib-only figures, PDF + PNG |
 | `scripts/00_build_folds.py` … `scripts/07_bench_edge.py` | the eight scripts |
+| `scripts/restore_arms.py` | puts `artifacts/resolved_arms.yaml` back over `configs/arms.yaml` |
 | `notebooks/colab_runner.ipynb` | **the primary runner**, 19 cells, no experiment logic |
 | `docs/COLAB_SETUP.md` | Drive layout, dataset upload, the `artifacts/` symlink, CPU-runtime fallback |
 | `notebooks/kaggle_runner.ipynb` | thin runner, 13 cells, no experiment logic *(alternative platform)* |
@@ -56,6 +57,7 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `artifacts/legacy_grid_metrics.csv` | the 46 legacy configs; **script 01 needs this on Kaggle** |
 | `artifacts/legacy_test_predictions.csv` | per-image predictions behind cross-reference 2 |
 | `artifacts/registry.jsonl` | **the resume state**; committed at the end of every session, restored by the next session's clone. Currently empty |
+| `artifacts/resolved_arms.yaml` | snapshot of the resolved hyperparameters, written by scripts 01 and 02. Absent until one of them runs. See §4.6 |
 
 ### Generated, not committed
 
@@ -111,10 +113,11 @@ Only two:
 - **`02_lr_sweep_baselines.py`** → `mobilenetv3_small` and `resnet18`: `lr`
   (currently `null`), `locked: true`, `lr_source`.
 
-**Commit `configs/arms.yaml` immediately after each.** The next Kaggle session
-clones fresh. If you skip this, `03_run_cv.py` trains the provisional `yolo26m`
-configuration and refuses the two baselines outright (`lr: null` → an explicit
-skip message, not a crash).
+**Commit `configs/arms.yaml` immediately after each.** The next session clones
+fresh.
+
+If you skip it, you no longer silently get the wrong experiment — §4.5 covers what
+happens instead — but you do get a stop, and the fix costs a step. Commit the file.
 
 ---
 
@@ -255,7 +258,62 @@ computed the balanced weights, printed them, charted them — and never passed t
 to the trainer (MIGRATION_NOTES.md §5.4). Nothing in its saved output would have
 revealed it.
 
-### 4.5 Getting the results out
+### 4.5 Hyperparameter drift, and how it is prevented
+
+This is the most dangerous failure mode left in the pipeline, because it produces
+plausible numbers rather than an error.
+
+`epochs`, `batch` and `lr` are in `registry.RUN_ID_FIELDS`. Change one and the same
+fold of the same arm hashes to a **different** `run_id`. Resumption is by `run_id`,
+so nothing is skipped — the fold is simply trained again, under the new settings,
+and the registry ends up holding **two hyperparameter regimes for one arm**. A mean
+across folds then averages both and reports a number describing no configuration
+that was ever run.
+
+The realistic route in: scripts 01 and 02 rewrite `configs/arms.yaml`; the session
+ends before that file is committed; the next clone carries the **provisional**
+`yolo26m` config again. Nothing about that is visibly wrong.
+
+Four checks now close it, at every point where it could do damage:
+
+| where | what it does |
+| --- | --- |
+| `00_build_folds.py` phase 0 | reports each arm's `epochs`/`batch`/`lr` and whether it is `locked`, `lr: null` or `provisional`, and whether `artifacts/resolved_arms.yaml` exists and **differs** from `configs/arms.yaml`. A difference is the signature of a lost config, and the preflight exits non-zero |
+| scripts 03, 04, 05 | before the run loop, `registry.assert_arms_match_registry` compares the loaded config against the `epochs`/`batch`/`lr` recorded in completed runs of the same arm and `split_kind`. On a mismatch it **aborts**, printing both configurations side by side and every affected `run_id`. Never proceeds, never treats it as a new run |
+| `aggregate.py` | `assert_hyperparameters_unanimous` refuses to build `summary_cv.csv` or `summary_per_class.csv` when an arm's records are not unanimous, naming the offending `run_ids` |
+| scripts 01, 02 | snapshot the resolved config to `artifacts/resolved_arms.yaml` so it can be recovered — §4.6 |
+
+Scripts 01 and 02 are deliberately **not** guarded this way: they *sweep*
+hyperparameters, so varying `epochs`/`batch`/`lr` across their records is the point.
+The guard applies to the scripts that write cv-kind records.
+
+### 4.6 Recovering a resolved config
+
+Scripts 01 and 02 write `artifacts/resolved_arms.yaml` immediately after they rewrite
+`configs/arms.yaml`: a header naming the resolving script, the timestamp and the git
+commit, then a verbatim copy of the file.
+
+It lives in `artifacts/`, which on Colab is a symlink into Drive — so it survives a
+dropped session even if `configs/arms.yaml` was never downloaded or committed. It is
+also committed (it has a `.gitignore` exception), so the same recovery works from a
+bare clone on any platform.
+
+In a fresh clone whose `configs/arms.yaml` has reverted:
+
+```bash
+python scripts/restore_arms.py --check   # show the difference, change nothing
+python scripts/restore_arms.py           # restore, then COMMIT configs/arms.yaml
+```
+
+Both print a per-arm before/after of `epochs`/`batch`/`lr`. `--check` exits 1 when a
+difference exists, so it is usable as a guard in a shell script.
+
+`restore_arms.py` only ever writes `configs/arms.yaml`. It does not touch the
+registry: if runs were already completed under the wrong config, restoring the file
+is the first half of the fix and deleting those `run_ids` is the second. The abort
+message from §4.5 names them.
+
+### 4.7 Getting the results out
 
 **On Colab**, Drive already holds everything the moment it is written, so this is
 about git history rather than survival: run the zip cell when you want to commit,

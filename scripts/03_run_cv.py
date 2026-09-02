@@ -153,6 +153,13 @@ def main() -> int:
         % (len(cache._cache), time.perf_counter() - warm_start)
     )
 
+    # Before any training: refuse to add runs under hyperparameters that disagree
+    # with the ones completed runs of the same arm were trained under. epochs,
+    # batch and lr feed the run_id hash, so drift does not resume -- it duplicates.
+    registry.assert_arms_match_registry(
+        script=SCRIPT, arms=arms, arms_cfg=arms_cfg, split_kind="cv"
+    )
+
     # Once per invocation, before any training. Aborts if the balanced weights
     # do not actually reach the loss; the compact proof goes into every record.
     weights_proof = require_class_weights_verified(

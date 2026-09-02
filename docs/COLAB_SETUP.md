@@ -136,9 +136,30 @@ contents alone.
 gitignored. It stays on the container's local disk and dies with the session, which
 is what you want.
 
-`configs/arms.yaml` also stays in the clone. Scripts 01 and 02 **rewrite** it with
-the hyperparameters they select, and if the session ends before you commit that file
-the selection is lost. Download and commit it as soon as either script finishes.
+`configs/arms.yaml` also stays in the clone — it is a tracked config file, not a
+generated artefact, so it is not symlinked. Scripts 01 and 02 **rewrite** it with the
+hyperparameters they select, and it dies with the session.
+
+That would be dangerous on its own, because `epochs`, `batch` and `lr` feed the
+`run_id` hash: a clone carrying the reverted config does not resume, it retrains the
+same folds under the old settings. So scripts 01 and 02 also write
+**`artifacts/resolved_arms.yaml`** — a full snapshot of the resolved config, with the
+resolving script and timestamp in the header. That file *is* in `artifacts/`, so Drive
+has it the moment it is written.
+
+In a fresh clone:
+
+```bash
+python scripts/restore_arms.py --check   # show what differs, change nothing
+python scripts/restore_arms.py           # put the resolved values back
+```
+
+Then commit `configs/arms.yaml`. Cell 4 of `00_build_folds.py`'s preflight tells you
+whether you need to: it reports every arm's state and whether the snapshot differs
+from the live file. See HANDOVER.md §4.5 and §4.6.
+
+Still download and commit `configs/arms.yaml` when a resolving script finishes — the
+snapshot is a safety net, not a substitute.
 
 ---
 
@@ -201,8 +222,8 @@ how many sessions are left.
 | order | script | runs | notes |
 | ---: | --- | ---: | --- |
 | 1 | `00_build_folds.py` | — | every fresh session; runs the preflight |
-| 2 | `01_complete_medium_grid.py` | 8 | **rewrites `configs/arms.yaml`** — commit it |
-| 3 | `02_lr_sweep_baselines.py` | 6 | **rewrites `configs/arms.yaml`** — commit it |
+| 2 | `01_complete_medium_grid.py` | 8 | **rewrites `configs/arms.yaml`** — commit it; also snapshots to `artifacts/` |
+| 3 | `02_lr_sweep_baselines.py` | 6 | **rewrites `configs/arms.yaml`** — commit it; also snapshots to `artifacts/` |
 | 4 | `03_run_cv.py` | 75 | expect several sessions |
 | 5 | `04_run_ablation.py` | 15 | needs 4's `yolo26n` folds |
 | 6 | `05_learning_curve.py` | 75 | expect several sessions |
@@ -239,9 +260,10 @@ survives the session. Download it, unpack it over your local checkout, and commi
 
 - `artifacts/registry.jsonl` — the resume state and the record of every completed run
 - `configs/arms.yaml` — after scripts 01 and 02 only
+- `artifacts/resolved_arms.yaml` — the snapshot of those resolved hyperparameters
 - the summary tables and `artifacts/figures/` as they appear
 
-See HANDOVER.md §4.5 for the full list of what to commit and when.
+See HANDOVER.md §4.7 for the full list of what to commit and when.
 
 Unlike the Kaggle runner, **you do not have to run cell 7 before the session ends**.
 Missing it costs you a commit, not a session's work.
@@ -257,7 +279,9 @@ Missing it costs you a commit, not a session's work.
 | cell 5 reports 0 completed runs when you expect more | `ARTIFACTS_DRIVE` differs from last session | fix the path before running anything |
 | everything is ~10× slower | CPU-only runtime | §4 |
 | `03_run_cv.py` skips the two baselines | their `lr` is still `null` | run `02_lr_sweep_baselines.py` and commit `configs/arms.yaml` |
-| script 03 uses the provisional `yolo26m` config | `configs/arms.yaml` was not committed after script 01 | commit it; the clone is what the next session gets |
+| a script aborts with HYPERPARAMETER DRIFT | `configs/arms.yaml` reverted after a dropped session, and completed runs disagree with it | `python scripts/restore_arms.py`, then commit `configs/arms.yaml`. HANDOVER.md §4.5 |
+| the preflight says the snapshot DIFFERS | same cause, caught before anything runs | same fix |
+| `06_export_figures.py` refuses with MIXED HYPERPARAMETERS | an arm has runs from two regimes in the registry | pick the real regime, delete the other's `run_ids`, restore the config. HANDOVER.md §4.5 |
 | a script refuses, naming two architectures | the YOLO26 checkpoint would not download | see HANDOVER.md §4.2; do **not** reach for `--allow-pretrained-fallback` by reflex |
 | the registry warns about schema drift | a record predates the current schema | HANDOVER.md §4.3 — delete the offending line and let the run happen again |
 | reading images is slow | the dataset is read from Drive over FUSE each session | optional: `!cp -r "$SRPCARD_DATA_ROOT" /content/dataset` then set `os.environ['SRPCARD_DATA_ROOT'] = '/content/dataset'`. Costs a minute, saves it back on every script. |

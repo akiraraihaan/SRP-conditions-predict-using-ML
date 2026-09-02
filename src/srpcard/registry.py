@@ -25,7 +25,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import artifacts_dir, git_commit, library_versions
+from .config import (
+    RUN_DEFINING_HYPERPARAMETERS,
+    artifacts_dir,
+    git_commit,
+    library_versions,
+)
 
 # The fields that DEFINE a run. Anything not listed here (metrics, timings,
 # hardware) is an outcome, not an identity, and must not enter the hash.
@@ -393,6 +398,149 @@ def print_plan(
     # Once per script invocation, right where the skip count is printed: those
     # skips are exactly what a stale record buys you.
     warn_if_stale(path)
+
+
+# --------------------------------------------------------------------------
+# hyperparameter drift
+# --------------------------------------------------------------------------
+#
+# epochs, batch and lr are in RUN_ID_FIELDS. Change one and the same fold of the
+# same arm hashes to a DIFFERENT run_id, so nothing is skipped and the run
+# happens again under the new settings -- leaving the registry holding two
+# hyperparameter regimes for one arm, which aggregate.py would then average
+# together without noticing.
+#
+# The realistic way that happens: scripts 01 and 02 rewrite configs/arms.yaml,
+# the session dies before that file is committed, and the next clone carries the
+# PROVISIONAL yolo26m config (or a baseline lr of null) again.
+
+
+class HyperparameterDriftError(RuntimeError):
+    """The loaded config disagrees with the config completed runs were trained under."""
+
+
+def completed_hyperparameters(
+    arm: str, split_kind: str = "cv", path: Path | None = None
+) -> dict[tuple, list[dict[str, Any]]]:
+    """Completed runs of one arm, grouped by their (epochs, batch, lr).
+
+    More than one key means the registry already holds mixed regimes.
+    """
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for record in load_registry(path):
+        if record.get("arm") != arm or record.get("split_kind") != split_kind:
+            continue
+        key = tuple(record.get(field) for field in RUN_DEFINING_HYPERPARAMETERS)
+        groups.setdefault(key, []).append(record)
+    return groups
+
+
+def _format_hyperparameters(key) -> str:
+    return "  ".join(
+        "%s %s" % (field, value)
+        for field, value in zip(RUN_DEFINING_HYPERPARAMETERS, key)
+    )
+
+
+def assert_config_matches_registry(
+    *,
+    script: str,
+    arm: str,
+    epochs: int,
+    batch: int,
+    lr: float,
+    split_kind: str = "cv",
+    path: Path | None = None,
+) -> None:
+    """Refuse to add runs under hyperparameters that disagree with completed ones.
+
+    Called by every script that writes cv-kind records, once per arm, BEFORE the
+    run loop. Aborts rather than proceeding: a mismatch is never a new run, it is
+    the same experiment about to be duplicated under different settings.
+    """
+    groups = completed_hyperparameters(arm, split_kind, path)
+    if not groups:
+        return
+
+    wanted = (epochs, batch, lr)
+    mismatched = {key: records for key, records in groups.items() if key != wanted}
+    if not mismatched:
+        return
+
+    lines = [
+        "HYPERPARAMETER DRIFT for arm %r -- refusing to run %s." % (arm, script),
+        "",
+        "  The registry already holds completed runs of this arm trained under",
+        "  DIFFERENT hyperparameters than configs/arms.yaml currently specifies.",
+        "  epochs, batch and lr feed the run_id hash, so proceeding would not skip",
+        "  those folds -- it would retrain them under the loaded config and leave",
+        "  two regimes in the registry for one arm. aggregate.py would then average",
+        "  across both without noticing.",
+        "",
+        "  %-26s %s" % ("configs/arms.yaml (loaded)", _format_hyperparameters(wanted)),
+    ]
+    for key, records in sorted(mismatched.items(), key=lambda kv: -len(kv[1])):
+        lines.append(
+            "  %-26s %s   (%d completed run(s))"
+            % ("registry", _format_hyperparameters(key), len(records))
+        )
+    lines.append("")
+    lines.append("  Affected run_ids:")
+    for key, records in sorted(mismatched.items(), key=lambda kv: -len(kv[1])):
+        for record in records[:20]:
+            lines.append(
+                "    %-16s %-24s r%sf%s"
+                % (
+                    record.get("run_id", "?"),
+                    record.get("script", "?"),
+                    record.get("repeat"),
+                    record.get("fold"),
+                )
+            )
+        if len(records) > 20:
+            lines.append("    ... and %d more" % (len(records) - 20))
+    lines += [
+        "",
+        "  Almost always this means a resolved configuration was lost: scripts 01",
+        "  and 02 rewrite configs/arms.yaml, and a session that ended before that",
+        "  file was committed leaves the next clone with the provisional values.",
+        "",
+        "  Recover the resolved config, do not overwrite the runs:",
+        "      python scripts/restore_arms.py",
+        "",
+        "  If instead you deliberately changed the hyperparameters, the completed",
+        "  runs above belong to the old configuration and must be deleted from",
+        "  artifacts/registry.jsonl before this arm is run again.",
+    ]
+    raise HyperparameterDriftError("\n".join(lines))
+
+
+def assert_arms_match_registry(
+    *,
+    script: str,
+    arms: list[str],
+    arms_cfg: dict[str, Any],
+    split_kind: str = "cv",
+    path: Path | None = None,
+) -> None:
+    """`assert_config_matches_registry` for each arm a script is about to run."""
+    for arm in arms:
+        arm_cfg = (arms_cfg.get("arms") or {}).get(arm)
+        if not arm_cfg or arm_cfg.get("lr") is None:
+            continue  # an unresolved arm is skipped by the caller anyway
+        assert_config_matches_registry(
+            script=script,
+            arm=arm,
+            epochs=int(arm_cfg["epochs"]),
+            batch=int(arm_cfg["batch"]),
+            lr=float(arm_cfg["lr"]),
+            split_kind=split_kind,
+            path=path,
+        )
+    print(
+        "[config] %d arm(s) checked against completed runs -- no hyperparameter drift"
+        % len(arms)
+    )
 
 
 def summarise(path: Path | None = None) -> dict[str, Any]:

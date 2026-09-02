@@ -8,6 +8,12 @@
 Only `03_run_cv` records enter summary_cv.csv. Development-split runs (scripts
 01, 02), the ablation (04) and the learning curve (05) are excluded: mixing them
 would average across different protocols and different corpora.
+
+For the same reason an arm whose own records are not unanimous on epochs, batch
+and lr is REFUSED rather than summarised. Those three feed the run_id hash, so an
+arm can accumulate two hyperparameter regimes without any run being skipped --
+the failure `assert_hyperparameters_unanimous` exists to catch, and the one thing
+a mean across folds would hide most effectively.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import artifacts_dir, load_data_config
+from .config import RUN_DEFINING_HYPERPARAMETERS, artifacts_dir, load_data_config
 from .registry import load_registry
 
 CV_SCRIPT = "03_run_cv"
@@ -36,8 +42,71 @@ SCALAR_METRICS = [
 ]
 
 
+class MixedHyperparametersError(RuntimeError):
+    """An arm's completed runs disagree on the hyperparameters that define them."""
+
+
 def cv_records(path: Path | None = None, script: str = CV_SCRIPT) -> list[dict[str, Any]]:
     return [r for r in load_registry(path) if r.get("script") == script]
+
+
+def hyperparameter_groups(records: list[dict[str, Any]]) -> dict[str, dict[tuple, list[str]]]:
+    """{arm: {(epochs, batch, lr): [run_id, ...]}}. More than one key is drift."""
+    groups: dict[str, dict[tuple, list[str]]] = {}
+    for record in records:
+        key = tuple(record.get(field) for field in RUN_DEFINING_HYPERPARAMETERS)
+        groups.setdefault(record.get("arm", "?"), {}).setdefault(key, []).append(
+            record.get("run_id", "?")
+        )
+    return groups
+
+
+def assert_hyperparameters_unanimous(records: list[dict[str, Any]]) -> None:
+    """Refuse to summarise an arm whose records were not all trained the same way.
+
+    epochs, batch and lr are part of the run_id, so two regimes for one arm means
+    two sets of run_ids and nothing skipped -- the folds were simply trained twice
+    under different settings. Averaging across them silently reports a number that
+    describes no configuration that was actually run.
+    """
+    offenders = {
+        arm: keys for arm, keys in hyperparameter_groups(records).items() if len(keys) > 1
+    }
+    if not offenders:
+        return
+
+    lines = [
+        "MIXED HYPERPARAMETERS in the registry -- refusing to summarise.",
+        "",
+        "  These arms have completed runs trained under more than one setting of",
+        "  epochs/batch/lr. Those fields define the run_id, so both regimes sit in",
+        "  the registry as separate runs and a mean across folds would average them",
+        "  together without any indication that it had.",
+        "",
+    ]
+    for arm, keys in sorted(offenders.items()):
+        lines.append("  arm %s -- %d regimes:" % (arm, len(keys)))
+        for key, run_ids in sorted(keys.items(), key=lambda kv: -len(kv[1])):
+            described = "  ".join(
+                "%s %s" % (field, value)
+                for field, value in zip(RUN_DEFINING_HYPERPARAMETERS, key)
+            )
+            lines.append("    %-40s %d run(s)" % (described, len(run_ids)))
+            for run_id in run_ids[:20]:
+                lines.append("      %s" % run_id)
+            if len(run_ids) > 20:
+                lines.append("      ... and %d more" % (len(run_ids) - 20))
+    lines += [
+        "",
+        "  Usually a resolved configuration was lost between sessions: scripts 01",
+        "  and 02 rewrite configs/arms.yaml, and a clone that reverted to the",
+        "  committed values retrains the same folds under the provisional ones.",
+        "",
+        "  Decide which regime is the real one, delete the other's run_ids from",
+        "  artifacts/registry.jsonl, and restore the intended config with:",
+        "      python scripts/restore_arms.py",
+    ]
+    raise MixedHyperparametersError("\n".join(lines))
 
 
 def summarise_cv(
@@ -50,6 +119,7 @@ def summarise_cv(
     records = records if records is not None else cv_records()
     if not records:
         return pd.DataFrame()
+    assert_hyperparameters_unanimous(records)
 
     frame = pd.DataFrame(
         [{"arm": r["arm"], "architecture": r["architecture"],
@@ -90,6 +160,7 @@ def summarise_per_class(
     records = records if records is not None else cv_records()
     if not records:
         return pd.DataFrame()
+    assert_hyperparameters_unanimous(records)
 
     classes = list(data_cfg["classes"])
     sizes = dict(data_cfg["clean_corpus"]["expected_counts"])

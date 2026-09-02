@@ -8,9 +8,10 @@ folds.json that already exists, because folds.json is a frozen input.
     python scripts/00_build_folds.py
     python scripts/00_build_folds.py --preflight-only
 
-Phase 0  preflight: environment, DATA_ROOT, committed artefacts, pretrained
-         checkpoints for all five arms. Nothing here trains, and nothing here
-         raises -- it reports, and the script exits non-zero if it failed.
+Phase 0  preflight: environment, DATA_ROOT, committed artefacts, hyperparameter
+         state, pretrained checkpoints for all five arms. Nothing here trains,
+         and nothing here raises -- it reports, and the script exits non-zero
+         if it failed.
 Phase 1  image index, class normalisation, conflict groups, count asserts
 Phase 2  legacy development split (raw 695) + distribution assert
 Phase 2b legacy cross-references (skipped when the legacy directory is absent)
@@ -30,12 +31,16 @@ from srpcard import data as srp_data  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
 from srpcard import legacy_audit, legacy_split, models  # noqa: E402
 from srpcard.config import (  # noqa: E402
+    RUN_DEFINING_HYPERPARAMETERS,
+    arms_snapshot_status,
     artifacts_dir,
     library_versions,
+    load_arms_config,
     load_data_config,
     load_folds_config,
     resolve_data_root,
     set_seed,
+    unresolved_arms,
 )
 
 
@@ -262,6 +267,84 @@ def _preflight_checkpoints(cfg: dict) -> tuple[bool, dict]:
     return ok, {"arms": results}
 
 
+def _preflight_config(cfg: dict) -> tuple[bool, dict]:
+    """Is the hyperparameter configuration whole, and did any of it get lost?
+
+    The one-minute answer to "did I lose a config between sessions?". Scripts 01
+    and 02 rewrite configs/arms.yaml and snapshot it to artifacts/, which on Colab
+    is a symlink into Drive. A clone whose arms.yaml reverted to the committed
+    values while the snapshot still holds resolved ones is exactly the state that
+    causes silent hyperparameter drift, because epochs/batch/lr feed the run_id.
+    """
+    print("\n-- hyperparameter configuration --------------------------------------")
+    arms_cfg = load_arms_config()
+    ok = True
+
+    print("  %-20s %-8s %-8s %-10s %s" % ("arm", "epochs", "batch", "lr", "state"))
+    for name, arm in sorted((arms_cfg.get("arms") or {}).items()):
+        if arm.get("lr") is None:
+            state = "lr NULL -- 02_lr_sweep_baselines.py has not resolved it"
+        elif arm.get("provisional"):
+            state = "PROVISIONAL -- 01_complete_medium_grid.py has not resolved it"
+        elif arm.get("locked"):
+            state = "locked"
+        else:
+            state = "-"
+        print(
+            "  %-20s %-8s %-8s %-10s %s"
+            % (name, arm.get("epochs"), arm.get("batch"), arm.get("lr"), state)
+        )
+
+    pending = unresolved_arms(arms_cfg)
+    if pending["lr_null"] or pending["provisional"]:
+        print(
+            "\n  %d arm(s) are not resolved yet. That is expected before scripts 01\n"
+            "  and 02 have run, and a LOST CONFIG afterwards."
+            % (len(pending["lr_null"]) + len(pending["provisional"]))
+        )
+
+    status = arms_snapshot_status(cfg)
+    print("\n  resolved snapshot : %s" % status["path"])
+    if not status["exists"]:
+        print("    absent -- written by scripts 01 and 02 when they resolve hyperparameters")
+        if pending["lr_null"] or pending["provisional"]:
+            print("    consistent with the unresolved arms above; nothing is lost")
+    else:
+        print("    written by  : %s" % status.get("resolved_by"))
+        print("    written at  : %s" % status.get("written_at"))
+        if not status["differs"]:
+            print("    agrees with configs/arms.yaml  ok")
+        else:
+            ok = False
+            print("    DIFFERS from configs/arms.yaml:")
+            print(
+                "      %-20s %-30s %s"
+                % ("arm", "configs/arms.yaml (now)", "snapshot (resolved)")
+            )
+            for entry in status["differences"]:
+                def describe(block):
+                    if block is None:
+                        return "(absent)"
+                    return " ".join(
+                        "%s=%s" % (f, block.get(f)) for f in RUN_DEFINING_HYPERPARAMETERS
+                    )
+
+                print(
+                    "      %-20s %-30s %s"
+                    % (entry["arm"], describe(entry["left"]), describe(entry["right"]))
+                )
+            print(
+                "\n    A resolved configuration was lost -- almost certainly a session\n"
+                "    that ended before configs/arms.yaml was committed. epochs, batch\n"
+                "    and lr feed the run_id hash, so running scripts 03-05 against the\n"
+                "    reverted config would NOT resume: it would retrain every fold\n"
+                "    under the old settings and leave two regimes in the registry.\n"
+                "    Restore it before running anything:\n"
+                "        python scripts/restore_arms.py"
+            )
+    return ok, {"pending": pending, "snapshot": status}
+
+
 def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
     """Everything that should fail in minute one rather than in hour six.
 
@@ -274,6 +357,7 @@ def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
     verdicts["environment"], _ = _preflight_environment()
     verdicts["data_root"], _ = _preflight_data_root(cfg)
     verdicts["artefacts"], _ = _preflight_artefacts(cfg)
+    verdicts["config"], _ = _preflight_config(cfg)
     if skip_checkpoints:
         print("\n-- pretrained checkpoints -------------------------------------------")
         print("  skipped -- --skip-checkpoint-preflight")
