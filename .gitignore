@@ -32,39 +32,71 @@ weights/
 *.tflite
 lc_tmp/
 
-# --- Artifacts: generated, NOT committed ... ---
+# --- Artifacts ---------------------------------------------------------
+# Default-deny with an allowlist. That default has now silently swallowed an
+# artefact three times -- legacy_grid_metrics.csv, folds_report.md, and then
+# every output of scripts 01b and 02-07 at once -- because `git add` on an
+# ignored path fails QUIETLY.
+#
+# So the rule is: if a script writes it under artifacts/ and it is not a model
+# weight or a backup, it needs a line here. tests/test_gitignore_artefacts.py
+# enumerates every path the scripts write and fails if one is missing, which is
+# the check that stops this happening a fourth time.
 artifacts/*
 
-# --- ... except these, which are frozen inputs or review artefacts ---
+# frozen inputs -- built once by 00, then treated as read-only
 !artifacts/.gitkeep
 !artifacts/folds.json
 !artifacts/image_index.csv
 # dev_split.json is committed too: it is recovered by Route A from the legacy
-# reference directory, which does not exist on Kaggle, so scripts 01 and 02
+# reference directory, which does not exist off-repo, so scripts 01, 01b and 02
 # could not otherwise run there. See MIGRATION_NOTES.md section 13.4.
 !artifacts/dev_split.json
-# the audit trail for the 27 excluded images -- small, and quoted in the paper
+
+# review artefacts -- anything meant to be READ must be committed, not merely generated
 !artifacts/excluded_images.csv
-# any artefact that is meant to be REVIEWED must be committed, not merely generated
 !artifacts/folds_report.md
 !artifacts/legacy_contamination.json
-# the 46 completed legacy grid configurations. Script 01 recomputes the argmax
-# over all 18 medium configs and needs these on Kaggle, where the legacy
-# reference directory ../FINAL-pipeline does not exist and cannot be re-read.
+
+# the legacy reference, unreproducible without ../FINAL-pipeline
 !artifacts/legacy_grid_metrics.csv
-# per-image predictions behind legacy cross-reference 2; quoted in the paper and
-# not reproducible without the legacy weights
 !artifacts/legacy_test_predictions.csv
-# The resolved hyperparameters, snapshotted by scripts 01 and 02 immediately
-# after they rewrite configs/arms.yaml. epochs/batch/lr feed the run_id hash, so
-# losing them between sessions silently retrains folds under the old config.
-# On Colab artifacts/ is a symlink into Drive and this survives a dropped session;
-# committing it makes the same recovery work from a bare clone.
-# Restore with: python scripts/restore_arms.py
+
+# THE RESUME PATH. git is primary on Kaggle, Drive on Colab; committed either
+# way, because it is the only record of which runs are complete.
+!artifacts/registry.jsonl
+# the resolved hyperparameters, snapshotted by 01, 01b and 02. epochs/batch/lr
+# feed the run_id hash, so losing them silently retrains folds under an old
+# config. Restore with: python scripts/restore_arms.py
 !artifacts/resolved_arms.yaml
 
-# THE RESUME PATH. git is PRIMARY: commit registry.jsonl at the end of every
-# Kaggle session, and the next session's `git clone` restores it, so every
-# script skips the runs it already contains. RESUME_FROM in the notebook is the
-# documented fallback, not the normal route. See HANDOVER.md section 4.
-!artifacts/registry.jsonl
+# hyperparameter search results -- these SELECT the locked configurations
+# 01,  legacy augmented protocol
+!artifacts/medium_grid_complete.csv
+# 01b, uniform protocol
+!artifacts/uniform_grid.csv
+# 02
+!artifacts/baseline_lr_sweep.csv
+
+# manuscript tables
+# 06
+!artifacts/summary_cv.csv
+# 06
+!artifacts/summary_per_class.csv
+# 06
+!artifacts/selected_epochs.csv
+# 04
+!artifacts/ablation_paired.csv
+# 04
+!artifacts/ablation_per_class.csv
+# 05
+!artifacts/learning_curve.csv
+# 07, Raspberry Pi
+!artifacts/edge_benchmark.json
+
+# publication figures. `artifacts/*` matches the directory but not its contents,
+# so un-ignoring the directory is enough to let git descend into it.
+!artifacts/figures/
+
+# NOT committed, deliberately: registry backups written by backfill_efficiency.py
+artifacts/*.bak
