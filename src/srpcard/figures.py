@@ -40,13 +40,65 @@ def _style() -> None:
     )
 
 
+# Set by script 06 before it draws anything: the provenance stamp that goes on
+# every figure. A stale figure then says so on its own face rather than waiting
+# to be noticed. None means "no stamp", which is what a caller outside 06 gets.
+PROVENANCE: dict | None = None
+
+
+def set_provenance(block: dict | None) -> None:
+    """Install the stamp every subsequent save() applies."""
+    global PROVENANCE
+    PROVENANCE = block
+
+
+def _stamp(fig) -> None:
+    """Draw the provenance strip along the bottom of the figure."""
+    if not PROVENANCE:
+        return
+    from .aggregate import provenance_caption
+
+    fig.text(
+        0.005,
+        0.004,
+        provenance_caption(PROVENANCE),
+        fontsize=4.5,
+        color="#888888",
+        ha="left",
+        va="bottom",
+    )
+
+
 def save(fig, out_dir: Path, name: str) -> list[Path]:
-    """Write `name`.pdf and `name`.png. Returns both paths."""
+    """Write `name`.pdf and `name`.png, both carrying the provenance stamp.
+
+    The stamp goes in two places: a small strip along the bottom of the image,
+    and the PDF's own metadata, so it survives being cropped into a manuscript.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    _stamp(fig)
+    metadata = {}
+    if PROVENANCE:
+        from .aggregate import provenance_caption
+
+        metadata = {
+            "Title": name,
+            "Subject": provenance_caption(PROVENANCE),
+            "Creator": "srpcard/figures.py",
+            "Keywords": "records=%d arms=%s registry=%s"
+            % (
+                PROVENANCE["n_records"],
+                ",".join(PROVENANCE["arms"]),
+                PROVENANCE["registry_sha1"],
+            ),
+        }
     written = []
     for suffix in ("pdf", "png"):
         target = out_dir / ("%s.%s" % (name, suffix))
-        fig.savefig(target, format=suffix)
+        if suffix == "pdf" and metadata:
+            fig.savefig(target, format=suffix, metadata=metadata)
+        else:
+            fig.savefig(target, format=suffix)
         written.append(target)
     import matplotlib.pyplot as plt
 

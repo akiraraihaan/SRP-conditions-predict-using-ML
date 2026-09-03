@@ -18,6 +18,8 @@ a mean across folds would hide most effectively.
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,10 @@ from .config import RUN_DEFINING_HYPERPARAMETERS, artifacts_dir, load_data_confi
 from .registry import load_registry
 
 CV_SCRIPT = "03_run_cv"
+
+# Everything write_all() produces. Script 06 clears these before regenerating,
+# so an interrupted run cannot leave a mix of fresh and stale tables.
+TABLE_NAMES = ("summary_cv.csv", "summary_per_class.csv", "selected_epochs.csv")
 
 SCALAR_METRICS = [
     "f1_macro",
@@ -50,6 +56,81 @@ SCALAR_METRICS = [
 
 class MixedHyperparametersError(RuntimeError):
     """An arm's completed runs disagree on the hyperparameters that define them."""
+
+
+def provenance(records: list[dict[str, Any]], path: Path | None = None) -> dict[str, Any]:
+    """What a generated artefact was built from.
+
+    Stamped into every table and figure script 06 writes. A stale artefact then
+    announces itself -- "built from 1 record" against a registry holding 75 --
+    instead of waiting for someone to notice that the numbers describe a run
+    that no longer exists.
+    """
+    from .registry import registry_path
+
+    path = Path(path) if path is not None else registry_path()
+    digest = "absent"
+    if path.exists():
+        digest = hashlib.sha1(path.read_bytes()).hexdigest()[:16]  # noqa: S324
+
+    fingerprints = sorted(
+        {
+            (r.get("corpus_fingerprint") or {}).get("sha1_of_sorted_included_sha1s")
+            for r in records
+        }
+        - {None}
+    )
+    return {
+        "n_records": len(records),
+        "arms": sorted({r.get("arm") for r in records} - {None}),
+        "scripts": sorted({r.get("script") for r in records} - {None}),
+        "corpus_fingerprint": fingerprints[0] if len(fingerprints) == 1 else fingerprints,
+        "registry_sha1": digest,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def provenance_lines(block: dict[str, Any]) -> list[str]:
+    """The provenance stamp as comment-free `key: value` strings."""
+    return [
+        "built from %d registry record(s)" % block["n_records"],
+        "arms: %s" % (", ".join(block["arms"]) or "none"),
+        "scripts: %s" % (", ".join(block["scripts"]) or "none"),
+        "corpus: %s" % block["corpus_fingerprint"],
+        "registry sha1: %s" % block["registry_sha1"],
+        "generated: %s" % block["generated_at"],
+    ]
+
+
+def provenance_caption(block: dict[str, Any]) -> str:
+    """One line, for a figure caption strip."""
+    return (
+        "%d record(s) | arms: %s | corpus %s | registry %s | %s"
+        % (
+            block["n_records"],
+            ",".join(block["arms"]) or "none",
+            block["corpus_fingerprint"],
+            block["registry_sha1"],
+            block["generated_at"],
+        )
+    )
+
+
+def write_csv_with_provenance(
+    frame: pd.DataFrame, target: Path, block: dict[str, Any]
+) -> Path:
+    """Write a table with the provenance stamp as leading `#` comment lines.
+
+    pandas.read_csv(comment="#") skips them, and every consumer in this
+    repository reads these files with pandas.
+    """
+    header = "".join("# %s\n" % line for line in provenance_lines(block))
+    target.write_text(
+        header + frame.to_csv(index=False, lineterminator="\n"),
+        encoding="utf-8",
+        newline="\n",
+    )
+    return target
 
 
 def cv_records(path: Path | None = None, script: str = CV_SCRIPT) -> list[dict[str, Any]]:
@@ -241,22 +322,24 @@ def write_all(data_cfg: dict[str, Any] | None = None, path: Path | None = None) 
     records = cv_records(path)
 
     written: dict[str, Path] = {}
+    stamp = provenance(records)
+
     summary = summarise_cv(records, data_cfg)
     if not summary.empty:
-        target = out / "summary_cv.csv"
-        summary.to_csv(target, index=False, lineterminator="\n")
-        written["summary_cv"] = target
+        written["summary_cv"] = write_csv_with_provenance(
+            summary, out / "summary_cv.csv", stamp
+        )
 
     per_class = summarise_per_class(records, data_cfg)
     if not per_class.empty:
-        target = out / "summary_per_class.csv"
-        per_class.to_csv(target, index=False, lineterminator="\n")
-        written["summary_per_class"] = target
+        written["summary_per_class"] = write_csv_with_provenance(
+            per_class, out / "summary_per_class.csv", stamp
+        )
 
     epochs = selected_epoch_distribution(records)
     if not epochs.empty:
-        target = out / "selected_epochs.csv"
-        epochs.to_csv(target, index=False, lineterminator="\n")
-        written["selected_epochs"] = target
+        written["selected_epochs"] = write_csv_with_provenance(
+            epochs, out / "selected_epochs.csv", stamp
+        )
 
     return written

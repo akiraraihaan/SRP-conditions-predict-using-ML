@@ -260,9 +260,16 @@ there creates a second, empty artifacts directory rather than failing.
 Drive holds the live copy; git holds the versioned history. They are different jobs,
 and cell 7 is for the second one only.
 
-Run cell 7 when you want to commit. It zips `artifacts/` plus `configs/arms.yaml` to
-`/content/artifacts_bundle.zip`, and copies the zip into Drive as well so it also
-survives the session. Download it, unpack it over your local checkout, and commit:
+Run cell 7 when you want to commit. The bundle mirrors the repository layout —
+paths inside are `artifacts/...` and `configs/arms.yaml` — so it unpacks straight
+over a checkout. A copy also goes to Drive so it survives the session.
+
+```bash
+unzip -o artifacts_bundle.zip
+git add artifacts configs/arms.yaml && git status
+```
+
+Then commit:
 
 - `artifacts/registry.jsonl` — the resume state and the record of every completed run
 - `configs/arms.yaml` — after scripts 01 and 02 only

@@ -1011,7 +1011,58 @@ by `extra.protocol` (`legacy_unweighted_ultralytics` against `uniform`).
 | 5.4 | class-weighted loss handles the imbalance | weights computed, printed, charted, never passed to the trainer |
 | 13.1 | a 10-class confusion matrix | 14 directories, four classes duplicated under a numeric prefix, every metric deflated |
 | **16** | **no augmentation: it distorts curve morphology** | **RandAugment, erasing, fliplr 0.5, HSV jitter, scale, translate — all on** |
+| **16.6** | **HANDOVER §4.7: "commit these", listing the figures and summary tables by name** | **17 of those paths had no `.gitignore` exception, so `git add` refused them SILENTLY** |
 
-Each was invisible in the saved outputs. Each was found by re-running the code
-rather than by reading it: §5.4 by grepping for the variable's only use, §13.1 by
-asserting the class count, §16 by a control re-run that failed its tolerance.
+Each was invisible in the saved outputs. Each surfaced only when something was
+re-run or re-checked, never from reading the code or the results: §5.4 by
+grepping for the variable's only use, §13.1 by asserting the class count, §16 by
+a control re-run that failed its tolerance, §16.6 by auditing the paths against
+the ignore rules before the scripts that write them had ever run.
+
+### 16.6 The documentation instructed a step the tooling refused silently
+
+`artifacts/uniform_grid.csv` was noticed to have no `.gitignore` exception. The
+audit that followed found **17**, not one: every output of scripts 01, 01b, 02,
+04, 05, 06 and 07, including all seven publication figures and every manuscript
+table.
+
+HANDOVER §4.7 listed most of them by name under **"commit these"**. The sequence
+that was about to happen:
+
+1. finish script 06, which writes the tables and figures;
+2. follow the documented step — `git add artifacts/...`, `git commit`;
+3. see **no error**, because `git add` on an ignored path is silent;
+4. push, and have lost every figure and summary table.
+
+Two silent failures stacked. The missing exceptions were the first. The second
+appeared in the fix itself: `.gitignore` **has no inline comments** — `#` only
+begins a comment at column 0 — so the first ten exception lines, written as
+`!artifacts/uniform_grid.csv   # 01b, uniform protocol`, included the comment
+text in the pattern and matched nothing at all. The fix silently did not work,
+in the same way the thing it was fixing silently did not work.
+
+A third instance of the same shape was found in the same audit: the Colab and
+Kaggle bundle cells built a zip holding the *contents* of `artifacts/` at its
+root plus `arms.yaml` beside them, while the docs said "unpack it over your local
+checkout". Followed literally that put `registry.jsonl` at the repository root
+and left `configs/arms.yaml` untouched — so the resume state and the resolved
+hyperparameters would both have been silently not committed. The bundle now
+mirrors the repository layout.
+
+**How it is prevented now.** `tests/test_gitignore_artefacts.py` enumerates every
+artefact the scripts write and asks `git check-ignore` directly. That command
+answers for paths that do not exist yet, so the outputs of scripts 02–06 are
+covered before those scripts have ever run. One test scrapes
+`artifacts_dir(...) / "name"` out of the source, so the list cannot drift behind
+the code, and another rejects inline comments in `.gitignore`.
+
+Related, and the reason this section exists rather than a one-line fix: the same
+audit found stale artefacts — `summary_per_class.csv`, `selected_epochs.csv` and
+`artifacts/figures/` — describing a one-fold smoke run whose registry record had
+been removed two commits earlier. While ignored they could not be committed by
+accident; un-ignoring made them committable, and this repository is cited in the
+manuscript's data availability statement. They were deleted, and script 06 now
+clears its whole output set before regenerating and stamps provenance (record
+count, arms, corpus fingerprint, registry sha1, timestamp) into every table and
+figure it writes, so a stale artefact announces itself instead of waiting to be
+noticed.

@@ -11,6 +11,20 @@ Also refreshes the manuscript tables via src/srpcard/aggregate.py:
 
 Figures whose inputs are missing are skipped with a message naming the script
 that produces them, so a partial run still emits everything it can.
+
+TWO RULES AGAINST STALE OUTPUT.
+
+1. The whole output set is DELETED before anything is regenerated. A partial or
+   interrupted run then leaves fewer files, never a mix of fresh and stale ones.
+   Before this, a figure from a run whose registry records had since been removed
+   sat in artifacts/figures/ looking exactly like a current one.
+
+2. Everything written carries a PROVENANCE stamp: how many registry records it
+   was built from, which arms and scripts, the corpus fingerprint, the registry
+   file's sha1 and a UTC timestamp. Tables get it as leading `#` comment lines;
+   figures get a strip along the bottom and the same text in the PDF metadata,
+   so it survives being cropped into a manuscript. A stale artefact announces
+   itself -- "built from 1 record" against a registry holding 75.
 """
 
 from __future__ import annotations
@@ -26,15 +40,44 @@ import pandas as pd  # noqa: E402
 from srpcard import aggregate, figures  # noqa: E402
 from srpcard import data as srp_data  # noqa: E402
 from srpcard.config import artifacts_dir, load_data_config  # noqa: E402
+from srpcard.registry import load_registry  # noqa: E402
 
 
 def rule(title: str) -> None:
     print("\n" + "=" * 74 + "\n" + title + "\n" + "=" * 74)
 
 
+def clear_outputs(artifacts: Path, out_dir: Path) -> int:
+    """Delete everything this script generates, before regenerating any of it.
+
+    Scoped deliberately: the three tables aggregate.write_all() produces, and the
+    figure files in out_dir. Nothing else in artifacts/ is touched -- the frozen
+    inputs, the registry and the other scripts' outputs are not this script's to
+    remove.
+    """
+    removed = 0
+    for name in aggregate.TABLE_NAMES:
+        target = artifacts / name
+        if target.exists():
+            target.unlink()
+            removed += 1
+    if out_dir.exists():
+        for target in sorted(out_dir.iterdir()):
+            if target.is_file() and target.suffix.lower() in {".pdf", ".png"}:
+                target.unlink()
+                removed += 1
+    return removed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default=None, help="default: artifacts/figures")
+    parser.add_argument(
+        "--keep-stale",
+        action="store_true",
+        help="do NOT clear the output set first (debugging only; can leave a mix "
+             "of fresh and stale files, which is the failure this guards against)",
+    )
     args = parser.parse_args()
 
     data_cfg = load_data_config()
@@ -43,6 +86,30 @@ def main() -> int:
 
     rule("06 -- publication figures")
     print("[out] %s" % out_dir)
+
+    # ---- provenance: what everything below is built from ----
+    records = aggregate.cv_records()
+    stamp = aggregate.provenance(records)
+    print("[provenance]")
+    for line in aggregate.provenance_lines(stamp):
+        print("    %s" % line)
+    if not records:
+        print(
+            "\n  NOTE: no 03_run_cv records. Tables and the figures that read them\n"
+            "        will be skipped, and anything left from a previous run has\n"
+            "        just been cleared rather than left to look current."
+        )
+    figures.set_provenance(stamp)
+
+    # ---- clear the whole output set BEFORE regenerating ----
+    if args.keep_stale:
+        print("\n[clear] skipped -- --keep-stale")
+    else:
+        removed = clear_outputs(artifacts_dir(data_cfg), out_dir)
+        print(
+            "\n[clear] removed %d previously generated file(s); a partial run below\n"
+            "        leaves fewer files, never a mix of fresh and stale ones" % removed
+        )
 
     written: list[Path] = []
     skipped: list[str] = []
@@ -74,7 +141,7 @@ def main() -> int:
     # ---- 3. Pareto ----
     summary_path = artifacts_dir(data_cfg) / "summary_cv.csv"
     if summary_path.exists():
-        summary = pd.read_csv(summary_path)
+        summary = pd.read_csv(summary_path, comment="#")
         if summary["gflops_mean"].notna().any():
             written += figures.figure_pareto(summary, out_dir)
             print("[fig] Pareto frontier (compute)")
@@ -110,7 +177,7 @@ def main() -> int:
     # ---- 5. learning curve ----
     lc_path = artifacts_dir(data_cfg) / "learning_curve.csv"
     if lc_path.exists():
-        written += figures.figure_learning_curve(pd.read_csv(lc_path), out_dir)
+        written += figures.figure_learning_curve(pd.read_csv(lc_path, comment="#"), out_dir)
         print("[fig] learning curve")
     else:
         skipped.append("learning curve: artifacts/learning_curve.csv (run scripts/05_learning_curve.py)")
@@ -120,7 +187,9 @@ def main() -> int:
     per_class_path = artifacts_dir(data_cfg) / "ablation_per_class.csv"
     if paired_path.exists() and per_class_path.exists():
         written += figures.figure_ablation(
-            pd.read_csv(paired_path), pd.read_csv(per_class_path), out_dir
+            pd.read_csv(paired_path, comment="#"),
+            pd.read_csv(per_class_path, comment="#"),
+            out_dir,
         )
         print("[fig] class-weight ablation")
     else:
@@ -132,7 +201,7 @@ def main() -> int:
     # ---- 7. selected-epoch distribution ----
     epochs_path = artifacts_dir(data_cfg) / "selected_epochs.csv"
     if epochs_path.exists():
-        epochs = pd.read_csv(epochs_path)
+        epochs = pd.read_csv(epochs_path, comment="#")
         if not epochs.empty:
             written += figures.figure_selected_epochs(epochs, out_dir)
             print("[fig] selected-epoch distribution")

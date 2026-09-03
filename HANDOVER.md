@@ -106,7 +106,9 @@ the size of the main experiment for a supporting analysis, with the extra draws
 resampling the same 15 partitions. The key is gone from `configs/arms.yaml`, and
 `05_learning_curve.py` raises if it reappears.
 
-`--dry-run` on steps 2–6 prints the plan without training. Use it first.
+`--dry-run` on steps 2–6 prints the plan without training, and 01b's also prints
+its projected wall time. Use it first. Step 1 has `--preflight-only` instead;
+step 7 has none, and clears its outputs before regenerating them.
 
 ### Scripts that write back into `configs/arms.yaml`
 
@@ -364,8 +366,19 @@ session ends even if the script was interrupted.
 
 Either way, in order:
 
-1. Run the zip cell. It copies `artifacts/` plus `configs/arms.yaml` into a bundle.
-2. Download `artifacts_bundle.zip` and unpack it over your local checkout.
+1. Run the zip cell. The bundle **mirrors the repository layout** — paths inside
+   are `artifacts/...` and `configs/arms.yaml` — so it unpacks straight over a
+   checkout with nothing landing in the wrong place. (It used to hold
+   `artifacts/`'s contents at its root, so following step 2 literally left
+   `configs/arms.yaml` and `artifacts/registry.jsonl` untouched and scattered
+   stray files at the repository root. MIGRATION_NOTES §16.6.)
+2. Download `artifacts_bundle.zip` and, in your local checkout:
+
+   ```bash
+   unzip -o artifacts_bundle.zip
+   git add artifacts configs/arms.yaml && git status
+   ```
+
 3. Commit these:
 
 | file | when | why |
@@ -394,7 +407,14 @@ Either way, in order:
    Committing `registry.jsonl` is still worth doing on both: it is the versioned
    record of what has been run, and on Kaggle it is the only one.
 
-**Never commit** model weights or `runs/` — both are gitignored and large.
+**Never commit** model weights or `runs/` — both are gitignored and large. The
+same is true of `artifacts/*.bak`, the registry backups `backfill_efficiency.py`
+writes; the bundle cell excludes them.
+
+Every path in the table above is checked against `.gitignore` by
+`tests/test_gitignore_artefacts.py`. Seventeen of them once had no exception, so
+following this table produced no error and committed nothing —
+MIGRATION_NOTES §16.6. If you add an artefact, add it to that test.
 
 ---
 
@@ -639,7 +659,7 @@ pip install pytest
 python -m pytest
 ```
 
-63 tests, ~20 s, no GPU and no dataset needed. They cover the registry schema
+106 tests, ~17 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,
@@ -665,8 +685,11 @@ python scripts/00_build_folds.py
 python scripts/03_run_cv.py --arms yolo26n --repeat 0 --fold 0   # smoke test
 ```
 
-Every script takes `--dry-run` (except 00 and 07) and fails with a message naming
-the missing file when an input is absent. Scripts 01–05 also take
+`--dry-run` is on scripts 01, 01b, 02, 03, 04, 05 and `backfill_efficiency.py`.
+It is **not** on 00, 06, 07 or `restore_arms.py`, which do not train — 00 has
+`--preflight-only` and `restore_arms.py` has `--check` for the same purpose.
+Every script fails with a message naming the missing file when an input is
+absent. Scripts 01–05 also take
 `--allow-pretrained-fallback`; see §4.2 before you use it.
 
 Nothing in `src/srpcard/` or `configs/` knows which platform it is on. Both
