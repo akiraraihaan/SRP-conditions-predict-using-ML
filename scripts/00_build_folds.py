@@ -34,6 +34,7 @@ from srpcard.config import (  # noqa: E402
     RUN_DEFINING_HYPERPARAMETERS,
     arms_snapshot_status,
     artifacts_dir,
+    git_commit,
     library_versions,
     load_arms_config,
     load_data_config,
@@ -66,6 +67,20 @@ def _preflight_environment() -> tuple[bool, dict]:
     print("  torch.version.cuda : %s" % versions.get("torch_cuda"))
     print("  cuda available     : %s" % versions.get("cuda_available"))
     print("  gpu                : %s" % versions.get("gpu", "-- none visible --"))
+
+    # Provenance is only exact if the tree matches the commit. Every registry
+    # record and every config snapshot stamps git_commit(), and a dirty tree
+    # makes that stamp name a commit the run was not actually made from.
+    commit = git_commit()
+    print("  git commit         : %s" % commit)
+    if commit.endswith("-dirty"):
+        print(
+            "\n  [WARNING] the working tree has uncommitted changes. Every record and\n"
+            "            config snapshot written from here is stamped '-dirty', which\n"
+            "            names a commit the run was not actually made from. Commit or\n"
+            "            stash before running scripts 03-05 -- their records are the\n"
+            "            provenance for the manuscript."
+        )
 
     status = set_seed(PREFLIGHT_SEED)
     print("\n  determinism probe (set_seed(%d)):" % PREFLIGHT_SEED)

@@ -35,6 +35,26 @@ this file as a template for anything else.
 =============================================================================
 
 Output: the recomputed yolo26m winner, written back into configs/arms.yaml.
+
+-----------------------------------------------------------------------------
+MIXED PRECISION -- a protocol difference between the two halves of the table
+-----------------------------------------------------------------------------
+This script does NOT pass `amp` to ultralytics, so ultralytics' own default
+(DEFAULT_CFG amp=True) applies, and `check_amp()` then resolves it against the
+device: it returns False on cpu and mps, True on CUDA. The 46 legacy runs were
+trained on CPU and so ran in fp32; runs completed here on a GPU run in mixed
+precision. That is a protocol difference inside a single table.
+
+The resolved value is recorded on every record (extra.amp_resolved), and
+`--control-rerun KEY` re-runs a configuration that already exists in the legacy
+half so the size of the difference can be measured rather than assumed. Its
+record is written under a distinct run_id with extra.control_rerun=true and is
+excluded from the argmax.
+
+`--amp on|off` forces the value, for decomposing a difference the control run
+turns up. Leave it at `auto` for anything that goes in the table: the eight
+completed runs were made under the default, and forcing it changes the protocol
+again.
 """
 
 from __future__ import annotations
@@ -63,6 +83,7 @@ from srpcard.config import (  # noqa: E402
     runs_dir,
     set_seed,
 )
+from srpcard.efficiency import profile  # noqa: E402
 from srpcard.legacy_split import load_dev_split  # noqa: E402
 from srpcard.models import (  # noqa: E402
     _resolve_pretrained,
@@ -78,6 +99,9 @@ LEGACY_PATIENCE = 20
 LEGACY_OPTIMIZER = "MuSGD"
 ARM = "yolo26m"
 VARIANT = "m"
+# The comparability margin for --control-rerun: within this, the legacy CPU half
+# and the GPU half of the grid can be read as one table.
+CONTROL_TOLERANCE = 0.02
 
 
 def rule(title: str) -> None:
@@ -211,6 +235,29 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--device", default=None, help="cuda | cpu (default: ultralytics auto)")
     parser.add_argument("--keep-dataset", action="store_true", help="do not delete the temp tree")
+    parser.add_argument(
+        "--control-rerun",
+        metavar="KEY",
+        default=None,
+        help=(
+            "re-run ONE configuration that is already complete in the legacy half of "
+            "the grid (configs/arms.yaml:medium_grid.completed_in_old_registry), to "
+            "measure how far this machine's protocol -- GPU, mixed precision, current "
+            "library versions -- moves the metric away from the legacy CPU value. "
+            "Written under a distinct run_id with extra.control_rerun=true, excluded "
+            "from the argmax, and configs/arms.yaml is not touched."
+        ),
+    )
+    parser.add_argument(
+        "--amp",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help=(
+            "mixed precision. 'auto' (default) leaves it to ultralytics, which means "
+            "True on CUDA and False on CPU -- the setting the eight completed runs "
+            "were made under. Force it only to decompose a control-run difference."
+        ),
+    )
     add_fallback_argument(parser)
     args = parser.parse_args()
 
@@ -271,8 +318,57 @@ def main() -> int:
             % (sorted(config_key(e, b, lr) for e, b, lr in missing), sorted(expected_missing))
         )
 
+    control_row = None
+    if args.control_rerun:
+        rule("CONTROL RE-RUN -- comparability check, not a grid entry")
+        legacy_keys = list(grid["completed_in_old_registry"])
+        if args.control_rerun not in legacy_keys:
+            raise SystemExit(
+                "--control-rerun %r is not one of the configurations already complete\n"
+                "  in the legacy half of the grid. It has to be, or there is no legacy\n"
+                "  value to compare against.\n"
+                "  Available: %s" % (args.control_rerun, ", ".join(legacy_keys))
+            )
+        match = completed[completed["key"] == args.control_rerun]
+        if match.empty:
+            raise SystemExit(
+                "%r is listed in configs/arms.yaml:medium_grid.completed_in_old_registry\n"
+                "  but has no row in %s" % (args.control_rerun, legacy_metrics_path.name)
+            )
+        control_row = match.iloc[0]
+        print("  configuration      : %s" % args.control_rerun)
+        print(
+            "  legacy value (CPU) : f1_macro_val %.4f"
+            % float(control_row["f1_macro_val"])
+        )
+        print("  re-running it here to see how far this machine's protocol moves it.")
+        print("  This record is EXCLUDED from the argmax and does not touch arms.yaml.")
+
     specs = []
-    for epochs, batch, lr in missing:
+    if control_row is not None:
+        spec = {
+            "arm": ARM,
+            "architecture": arms_cfg["arms"][ARM]["architecture"],
+            "script": SCRIPT,
+            "split_kind": "dev",
+            "repeat": None,
+            "fold": None,
+            "epochs": int(control_row["epochs"]),
+            "batch": int(control_row["batch"]),
+            "lr": float(control_row["lr"]),
+            "class_weights": "none_legacy_bug",
+            # This is what keeps the run_id distinct from the same configuration
+            # run as a grid entry: "extra" is one of registry.RUN_ID_FIELDS.
+            "run_seed": LEGACY_SEED,
+            "extra": "control_rerun",
+        }
+        spec["run_id"] = registry.compute_run_id(**spec)
+        spec["key"] = str(control_row["key"])
+        spec["control_rerun"] = True
+        spec["legacy_f1_macro_val"] = float(control_row["f1_macro_val"])
+        specs.append(spec)
+
+    for epochs, batch, lr in (missing if control_row is None else []):
         spec = {
             "arm": ARM,
             "architecture": arms_cfg["arms"][ARM]["architecture"],
@@ -289,6 +385,7 @@ def main() -> int:
         }
         spec["run_id"] = registry.compute_run_id(**spec)
         spec["key"] = config_key(epochs, batch, lr)
+        spec["control_rerun"] = False
         specs.append(spec)
 
     todo, skipped = registry.plan_runs(specs)
@@ -348,7 +445,7 @@ def main() -> int:
         else:
             assert_checkpoint_matches_architecture(ARM, architecture, weights_name)
 
-        model.train(
+        train_kwargs = dict(
             data=str(dataset_root),
             epochs=spec["epochs"],
             imgsz=LEGACY_IMG_SIZE,
@@ -363,6 +460,25 @@ def main() -> int:
             exist_ok=True,
             device=args.device,
             # NOTE: no class-weight argument. Deliberate. See the header.
+        )
+        # Only passed when forced. Left out, ultralytics applies DEFAULT_CFG
+        # amp=True and check_amp() resolves it to False on cpu/mps, True on CUDA
+        # -- which is the setting the eight completed runs were made under.
+        if args.amp != "auto":
+            train_kwargs["amp"] = args.amp == "on"
+        model.train(**train_kwargs)
+
+        # What ultralytics ASKED for, and what it actually RESOLVED to after
+        # check_amp(). The second is the one that describes the run.
+        amp_requested, amp_resolved = None, None
+        try:
+            amp_requested = bool(model.trainer.args.amp)
+            amp_resolved = bool(model.trainer.amp)
+        except Exception as exc:  # noqa: BLE001 - recorded as unknown, never fatal
+            print("  [amp] could not read the resolved value: %s" % exc)
+        print(
+            "  amp requested %s -> resolved %s   (device %s)"
+            % (amp_requested, amp_resolved, getattr(model.trainer, "device", "?"))
         )
 
         run_dir = runs_dir(data_cfg) / "classify" / run_name
@@ -381,6 +497,20 @@ def main() -> int:
         )
 
         size_mb = round(weights.stat().st_size / (1024**2), 3)
+        # params and gflops from the trained module itself. size_mb stays the
+        # checkpoint file size, which is what the legacy table reports.
+        efficiency = {"size_mb": size_mb}
+        try:
+            measured = profile(model.model, LEGACY_IMG_SIZE, latency=False)
+            efficiency["params"] = measured["params"]
+            efficiency["gflops"] = measured["gflops"]
+            print(
+                "  params %s  gflops %s"
+                % (efficiency["params"], efficiency["gflops"])
+            )
+        except Exception as exc:  # noqa: BLE001 - a null here is better than a crash
+            print("  [efficiency] could not profile the trained module: %s" % exc)
+
         record = registry.build_record(
             run_id=spec["run_id"],
             script=SCRIPT,
@@ -416,7 +546,7 @@ def main() -> int:
                 epochs_run=spec["epochs"],
             ),
             metrics=test_metrics,
-            efficiency={"size_mb": size_mb},
+            efficiency=efficiency,
             wall_time_s=wall,
             determinism_status={"note": "ultralytics trainer; determinism not enforced"},
             extra={
@@ -427,10 +557,72 @@ def main() -> int:
                 "accuracy_val": val_metrics["accuracy"],
                 "val_metrics": val_metrics,
                 "weights": str(weights),
+                # The 46 legacy runs were CPU, so amp resolved to False there.
+                # A GPU run here resolves to True unless --amp off was given.
+                "amp_requested": amp_requested,
+                "amp_resolved": amp_resolved,
+                "amp_flag": args.amp,
+                # A control re-run never enters the argmax.
+                "control_rerun": bool(spec.get("control_rerun")),
+                "legacy_f1_macro_val": spec.get("legacy_f1_macro_val"),
             },
         )
         registry.append_record(record)
         print("  [registry] appended %s" % spec["run_id"])
+
+    # ---- control re-run: report and stop, without touching the grid ----
+    if control_row is not None:
+        rule("CONTROL RE-RUN -- comparability verdict")
+        key = str(control_row["key"])
+        legacy_value = float(control_row["f1_macro_val"])
+        here = None
+        for record in registry.load_registry():
+            extra = record.get("extra") or {}
+            if (
+                record.get("script") == SCRIPT
+                and extra.get("control_rerun")
+                and extra.get("key") == key
+            ):
+                here = record
+        if here is None:
+            print("  No control record found -- nothing was run.")
+            return 1
+
+        measured = float(here["extra"]["f1_macro_val"])
+        delta = measured - legacy_value
+        print("  configuration            : %s" % key)
+        print("  legacy   (CPU, fp32)     : f1_macro_val %.4f" % legacy_value)
+        print(
+            "  this run (%s, amp=%s) : f1_macro_val %.4f"
+            % (
+                (here.get("library_versions") or {}).get("gpu", "cpu"),
+                here["extra"].get("amp_resolved"),
+                measured,
+            )
+        )
+        print("  difference               : %+.4f" % delta)
+        print()
+        if abs(delta) <= CONTROL_TOLERANCE:
+            print(
+                "  WITHIN +/-%.2f. The two halves of the 18-configuration table are\n"
+                "  comparable on this evidence, and the epoch-budget finding can be\n"
+                "  reported from the table as a whole." % CONTROL_TOLERANCE
+            )
+        else:
+            print(
+                "  OUTSIDE +/-%.2f. The protocol change moves the metric by more than\n"
+                "  the tolerance, so the table cannot be read as one experiment.\n"
+                "  Report it as two protocols and drop the epoch-budget finding.\n"
+                "  To decompose the cause, re-run with --amp off: if that lands close\n"
+                "  to the legacy value, mixed precision is the difference; if it does\n"
+                "  not, the device or the library versions are." % CONTROL_TOLERANCE
+            )
+        print("\n  configs/arms.yaml was NOT touched, and this record is excluded")
+        print("  from the argmax (extra.control_rerun=true).")
+
+        if not args.keep_dataset and dataset_root.exists():
+            shutil.rmtree(dataset_root)
+        return 0
 
     # ---- recompute the winner over all 18 ----
     rule("yolo26m winner, recomputed over all 18 configurations")
@@ -440,7 +632,13 @@ def main() -> int:
         for _, r in completed.iterrows()
     ]
     for record in registry.load_registry():
-        if record.get("script") == SCRIPT and record.get("extra", {}).get("f1_macro_val") is not None:
+        extra = record.get("extra") or {}
+        # A control re-run is the SAME configuration as a legacy row, deliberately
+        # measured under a different protocol. Letting it in would either shadow
+        # the legacy value or duplicate the key.
+        if extra.get("control_rerun"):
+            continue
+        if record.get("script") == SCRIPT and extra.get("f1_macro_val") is not None:
             rows.append(
                 {
                     "key": record["extra"]["key"],

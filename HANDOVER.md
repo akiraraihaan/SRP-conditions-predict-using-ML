@@ -39,6 +39,7 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `src/srpcard/figures.py` | matplotlib-only figures, PDF + PNG |
 | `scripts/00_build_folds.py` … `scripts/07_bench_edge.py` | the eight scripts |
 | `scripts/restore_arms.py` | puts `artifacts/resolved_arms.yaml` back over `configs/arms.yaml` |
+| `scripts/backfill_efficiency.py` | fills null `params`/`gflops` in existing registry records |
 | `notebooks/colab_runner.ipynb` | **the primary runner**, 19 cells, no experiment logic |
 | `docs/COLAB_SETUP.md` | Drive layout, dataset upload, the `artifacts/` symlink, CPU-runtime fallback |
 | `notebooks/kaggle_runner.ipynb` | thin runner, 13 cells, no experiment logic *(alternative platform)* |
@@ -177,7 +178,7 @@ skips the downloads. It covers:
 
 | section | what it tells you |
 | --- | --- |
-| environment | GPU name, torch / torchvision / ultralytics versions, `torch.version.cuda`, and whether `cudnn.deterministic` actually took effect |
+| environment | GPU name, torch / torchvision / ultralytics versions, `torch.version.cuda`, whether `cudnn.deterministic` actually took effect, and the git commit — **warning loudly when the working tree is dirty**, because every record and config snapshot then stamps a commit the run was not made from |
 | DATA_ROOT | the path it resolved and from where, plus the per-class image counts it actually found against `expected_counts` |
 | committed artefacts | `image_index.csv`, `dev_split.json` and `folds.json` verified against their **fingerprints**, not merely present: the `folds.json` corpus block is recomputed from the committed index, and the dev split is checked disjoint, exhaustive and in range |
 | pretrained checkpoints | all five arms' checkpoints **loaded**, not just resolved — so a missing YOLO26 file surfaces in minute one instead of after 40 runs, and the table says which arms downloaded and which were already local |
@@ -218,6 +219,13 @@ and its older numbers are inherited into the final results. So:
   its missing fields. It runs from `print_plan`, once per script invocation, right
   where the skip count is printed.
 - `summarise` reports `n_incomplete_schema` and `n_class_weights_unverified`.
+
+`scripts/backfill_efficiency.py` is the one thing that rewrites the registry rather
+than appending to it, and it is deliberately narrow: it fills a null `params` or
+`gflops` (a pure function of architecture, class count and image size, so derivable
+rather than re-runnable), touches nothing else, adds and removes no records, leaves
+`run_id` alone — those two fields are outcomes, not identity — and copies the file
+to a timestamped `.bak` first. `--dry-run` shows exactly what it would change.
 
 Three groups of field were added because they had to travel *with* the results
 rather than live only in a console line or a smoke test:
@@ -369,14 +377,61 @@ Either way, in order:
    significance came from the validation partition).
 3. **`gas_influence` has 2 validation images per fold** (`folds_report.md`). It
    does not affect reported metrics, but it adds variance to checkpoint selection.
-4. **Script 01 is the only script that deliberately reproduces the legacy bug.**
+4. **The 18-configuration medium table spans two protocols.** §7 — settle it with
+   `--control-rerun` before the epoch-budget finding goes in the manuscript.
+5. **Script 01 is the only script that deliberately reproduces the legacy bug.**
    Everything it produces belongs to the legacy unweighted protocol and must be
    labelled as such wherever it is reported. It is not comparable with anything
    from scripts 02–05.
 
 ---
 
-## 6. Local development
+## 6. The medium grid spans two protocols
+
+`artifacts/medium_grid_complete.csv` has 18 rows from two different machines:
+
+| rows | where | device | mixed precision |
+| ---: | --- | --- | --- |
+| 46 legacy (10 medium) | the prior study | CPU | **off** |
+| 8 new | Colab T4 | CUDA | **on** |
+
+Script 01 does **not** pass `amp` to ultralytics, so ultralytics' `DEFAULT_CFG
+amp=True` applies and `check_amp()` resolves it against the device: `False` on
+cpu and mps, `True` on CUDA. The legacy half therefore ran fp32 and the new half
+ran mixed precision. Neither is wrong; they are just not the same protocol, and
+the epoch-budget reading of that table depends on them being comparable.
+
+Every record now carries `extra.amp_requested`, `extra.amp_resolved` and
+`extra.amp_flag`. The eight already-completed records predate that and do not —
+their `library_versions` records `Tesla T4` and `cuda_available: True`, which
+implies `amp_resolved: True`, but implied is not measured and they are left as
+they are.
+
+### Settling it: `--control-rerun`
+
+```bash
+python scripts/01_complete_medium_grid.py --control-rerun m_ep25_bs8_lr1e-02
+```
+
+Re-runs one configuration that already exists in the legacy half, on the current
+machine, and prints the new validation macro-F1 against the legacy value with the
+difference. The record is written under a **distinct `run_id`** (its `extra` field
+is `"control_rerun"`, and `extra` is one of `registry.RUN_ID_FIELDS`), carries
+`extra.control_rerun: true`, is **excluded from the argmax**, and `configs/arms.yaml`
+is not touched.
+
+The verdict, at a tolerance of ±0.02 (`CONTROL_TOLERANCE` in the script):
+
+- **within** — the two halves are comparable and the table can be read as one
+  experiment, epoch-budget finding included;
+- **outside** — report it as two protocols and drop the finding. `--amp off` then
+  decomposes the cause: if it lands near the legacy value, mixed precision is the
+  difference; if not, the device or the library versions are.
+
+The key must be one of `medium_grid.completed_in_old_registry` — a configuration
+with no legacy value has nothing to compare against, and the script refuses it.
+
+## 7. Local development
 
 ```bash
 export SRPCARD_DATA_ROOT=/path/to/dataset      # the 10 class directories
