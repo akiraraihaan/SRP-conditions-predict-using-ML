@@ -130,6 +130,12 @@ The cell copies in two directions, and they are deliberately not symmetric:
 Re-running cell 5 is safe: it detects an existing symlink and leaves the Drive
 contents alone.
 
+**Re-run cell 5 after every re-run of the clone cell.** A fresh clone brings a
+plain `artifacts/` directory, so the symlink is gone until cell 5 re-establishes
+it, and anything written in between goes to the container's disk and dies with
+the session. Cell 2 says so when it happens, and the run cell refuses to start
+until the symlink is back.
+
 ### What does *not* go to Drive
 
 `runs/` — training weights and ultralytics output. Large, regenerable, and
@@ -276,7 +282,7 @@ Missing it costs you a commit, not a session's work.
 | --- | --- | --- |
 | cell 4 fails naming the path | `DATA_ROOT_DRIVE` points at `srp-dyna-card/` not `.../dataset/` | add the `dataset/` wrapper to the path |
 | per-class counts are short | partial Drive upload | re-upload as a zip and unzip in place (§2) |
-| cell 5 reports 0 completed runs when you expect more | `ARTIFACTS_DRIVE` differs from last session | fix the path before running anything |
+| cell 5 reports 0 completed runs when you expect more | `ARTIFACTS_DRIVE` differs from last session, **or the clone cell was re-run without re-running cell 5** | fix the path, or re-run cell 5; the clone replaces the symlink with a plain directory and cell 2 now warns when it has |
 | everything is ~10× slower | CPU-only runtime | §4 |
 | `03_run_cv.py` skips the two baselines | their `lr` is still `null` | run `02_lr_sweep_baselines.py` and commit `configs/arms.yaml` |
 | a script aborts with HYPERPARAMETER DRIFT | `configs/arms.yaml` reverted after a dropped session, and completed runs disagree with it | `python scripts/restore_arms.py`, then commit `configs/arms.yaml`. HANDOVER.md §4.5 |

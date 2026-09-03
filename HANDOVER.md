@@ -639,7 +639,7 @@ pip install pytest
 python -m pytest
 ```
 
-56 tests, ~12 s, no GPU and no dataset needed. They cover the registry schema
+63 tests, ~20 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,
