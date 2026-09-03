@@ -15,11 +15,12 @@ Two rounds of this have been needed:
                     profiled the trained module.
   size_mb_*         `size_mb` used to mean the ultralytics checkpoint file size
                     in script 01 and an fp32 state_dict everywhere else -- two
-                    different quantities under one name, differing by ~2x,
-                    with the manuscript quoting the smaller. The old value is
-                    preserved as `size_mb_checkpoint_file` and `size_mb` is
-                    rewritten to the fp32 figure so it means one thing across
-                    the registry. See src/srpcard/efficiency.py.
+                    different quantities under one name, differing by ~2x. The
+                    checkpoint value is preserved as `size_mb_checkpoint_file`,
+                    and `size_mb` now aliases the fp16 figure, which is what the
+                    framework actually deploys. The payload variants (raw tensor
+                    bytes, no container) are filled at the same time.
+                    See src/srpcard/efficiency.py.
 
 This is the one place in the repository that REWRITES artifacts/registry.jsonl
 rather than appending to it. It is therefore deliberately narrow:
@@ -48,7 +49,17 @@ from srpcard.config import load_arms_config, load_data_config  # noqa: E402
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import build_model  # noqa: E402
 
-DERIVED_FIELDS = ("params", "gflops", "size_mb_fp32", "size_mb_fp16")
+DERIVED_FIELDS = (
+    "params",
+    "gflops",
+    "size_mb_fp32",
+    "size_mb_fp16",
+    "size_mb_fp16_payload",
+    "size_mb_fp32_payload",
+)
+
+# size_mb aliases the PRIMARY measurement, which is fp16 (efficiency.py).
+PRIMARY_SIZE_FIELD = "size_mb_fp16"
 
 # Records written before size_mb was disambiguated: script 01 stored the .pt file
 # size there. Move it to its own name and let size_mb become the fp32 figure.
@@ -73,7 +84,9 @@ def measure(arm: str, arms_cfg, data_cfg, cache: dict) -> dict | None:
     return cache[arm]
 
 
-def needs_work(record: dict) -> bool:
+def needs_work(record: dict, *, refresh: bool = False) -> bool:
+    if refresh:
+        return True
     if any(record.get(field) is None for field in DERIVED_FIELDS):
         return True
     # a pre-disambiguation record: size_mb still holds the checkpoint file size
@@ -86,6 +99,16 @@ def needs_work(record: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="report, write nothing")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help=(
+            "also RECOMPUTE derived fields that are already set. Needed when the "
+            "definition of a measurement changes -- the fp16/fp32 sizes were once "
+            "measured through a temp filename that altered torch's zip container, "
+            "so values written before that fix are stale. Off by default."
+        ),
+    )
     args = parser.parse_args()
 
     rule("backfill null params/gflops in the registry")
@@ -98,7 +121,7 @@ def main() -> int:
         print("\n  Nothing to do.")
         return 0
 
-    incomplete = [r for r in records if needs_work(r)]
+    incomplete = [r for r in records if needs_work(r, refresh=args.refresh)]
     if not incomplete:
         print("\n  Every record already carries the derived efficiency fields.")
         return 0
@@ -134,10 +157,13 @@ def main() -> int:
             if record.get(field) is None:
                 record[field] = stats[field]
                 changed.append(field)
+            elif args.refresh and record[field] != stats[field]:
+                changed.append("%s %s->%s" % (field, record[field], stats[field]))
+                record[field] = stats[field]
 
-        if record.get("size_mb") != stats["size_mb_fp32"]:
-            record["size_mb"] = stats["size_mb_fp32"]
-            changed.append("size_mb->fp32")
+        if record.get("size_mb") != stats[PRIMARY_SIZE_FIELD]:
+            record["size_mb"] = stats[PRIMARY_SIZE_FIELD]
+            changed.append("size_mb->fp16")
 
         if changed:
             filled += 1

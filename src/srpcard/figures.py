@@ -140,6 +140,53 @@ def figure_pareto(summary, out_dir: Path) -> list[Path]:
     return save(fig, out_dir, "fig_pareto")
 
 
+def figure_pareto_size(summary, out_dir: Path) -> list[Path]:
+    """Accuracy against MODEL SIZE, with the Pareto frontier marked.
+
+    The size axis is fp16 -- half-precision weights, which is what the framework
+    deploys -- and the axis label says so. An fp32 state_dict is twice the size
+    and is never the artefact that reaches the device; a reader who assumes the
+    wrong precision misreads the deployment cost by a factor of two, so the
+    precision is named on the axis rather than left to the caption.
+    """
+    import matplotlib.pyplot as plt
+
+    column = "size_mb_fp16_mean" if "size_mb_fp16_mean" in summary else "size_mb_mean"
+
+    _style()
+    fig, ax = plt.subplots(figsize=(5.6, 4.0))
+
+    x = summary[column].to_numpy(dtype=float)
+    y = summary["f1_macro_mean"].to_numpy(dtype=float)
+    err = summary["f1_macro_std"].to_numpy(dtype=float)
+    names = summary["arm"].tolist()
+
+    ax.errorbar(x, y, yerr=err, fmt="o", capsize=3, markersize=6)
+    for xi, yi, name in zip(x, y, names):
+        ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(6, 4), fontsize=8)
+
+    optimal = [
+        i
+        for i in range(len(x))
+        if not any((x[j] <= x[i]) and (y[j] >= y[i]) and (j != i) for j in range(len(x)))
+    ]
+    if optimal:
+        order = np.argsort(x[optimal])
+        ax.plot(
+            x[np.array(optimal)][order],
+            y[np.array(optimal)][order],
+            "--",
+            linewidth=1,
+            label="Pareto frontier",
+        )
+        ax.legend()
+
+    ax.set_xlabel("model size (MB, fp16 weights as deployed)")
+    ax.set_ylabel("test macro-F1 (mean $\\pm$ s.d. over 15 folds)")
+    ax.set_title("Accuracy against model size")
+    return save(fig, out_dir, "fig_pareto_size")
+
+
 def figure_confusion(matrix, classes, out_dir: Path, name: str, title: str) -> list[Path]:
     """Row-normalised confusion matrix. Matplotlib imshow, no seaborn."""
     import matplotlib.pyplot as plt

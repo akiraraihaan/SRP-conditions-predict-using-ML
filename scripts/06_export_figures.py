@@ -77,9 +77,18 @@ def main() -> int:
         summary = pd.read_csv(summary_path)
         if summary["gflops_mean"].notna().any():
             written += figures.figure_pareto(summary, out_dir)
-            print("[fig] Pareto frontier")
+            print("[fig] Pareto frontier (compute)")
         else:
             skipped.append("pareto: gflops missing from summary_cv.csv")
+
+        size_column = (
+            "size_mb_fp16_mean" if "size_mb_fp16_mean" in summary else "size_mb_mean"
+        )
+        if size_column in summary and summary[size_column].notna().any():
+            written += figures.figure_pareto_size(summary, out_dir)
+            print("[fig] Pareto frontier (size, fp16 weights)")
+        else:
+            skipped.append("pareto (size): size_mb_fp16 missing from summary_cv.csv")
     else:
         skipped.append("pareto: artifacts/summary_cv.csv (run scripts/03_run_cv.py)")
 

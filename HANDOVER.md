@@ -432,61 +432,116 @@ The verdict, at a tolerance of ±0.02 (`CONTROL_TOLERANCE` in the script):
 The key must be one of `medium_grid.completed_in_old_registry` — a configuration
 with no legacy value has nothing to compare against, and the script refuses it.
 
-## 7. Model size is measured twice
+## 7. Model size: fp16 is primary
 
-**`size_mb` was not one quantity.** Script 01 recorded the ultralytics
-checkpoint file size; scripts 02–05 would have recorded an fp32 `state_dict`.
-Ultralytics strips the optimizer and casts the model to **half precision** before
-saving, so the two differ by a factor of ~2 — and the legacy checkpoint figures
-are the ones in the manuscript abstract and two of its tables.
+**`size_mb` was not one quantity.** Script 01 recorded the ultralytics checkpoint
+file size; scripts 02–05 would have recorded an fp32 `state_dict`. Ultralytics
+strips the optimizer and casts to **half precision** before saving, so the two
+differ by a factor of ~2 — and the legacy fp16 figures are the ones in the
+manuscript abstract and two of its tables.
 
-Measured on this machine, three fresh builds per arm, all stable:
+**fp16 is the primary measurement**, because it is what is actually deployed. The
+artefact copied to a Raspberry Pi is the checkpoint the framework ships, and
+ultralytics ships half precision. An fp32 `state_dict` is a form that is never
+deployed, so reporting it as "model size" overstates the deployment cost by 2×
+and weakens the edge argument for no reason. fp16 is also computable uniformly
+for all five arms, unlike the checkpoint file size, which exists only for the
+three ultralytics ones.
 
-| arm | params | legacy `.pt` | fp32 `state_dict` | fp16 `state_dict` | fp32/legacy | fp16 − legacy |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| yolo26n | 1,543,914 | 3.063 | 5.998 | 3.034 | 1.96× | −0.029 |
-| yolo26s | 5,455,818 | 10.538 | 20.950 | 10.510 | 1.99× | −0.028 |
-| yolo26m | 10,366,026 | 19.932 | 39.719 | 19.904 | 1.99× | −0.028 |
-| mobilenetv3_small | 1,528,106 | — | 5.946 | 3.007 | — | — |
-| resnet18 | 11,181,642 | — | 42.727 | 21.381 | — | — |
+### The numbers
+
+Measured on this machine, identical across three consecutive `profile()` calls:
+
+| arm | backend | tensors | **fp16 (MB)** | fp32 (MB) | fp16 payload | container | legacy `.pt` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| yolo26n | ultralytics | 236 | **3.022** | 5.986 | 2.964 | 0.058 | 3.063 |
+| yolo26s | ultralytics | 236 | **10.498** | 20.938 | 10.440 | 0.058 | 10.538 |
+| yolo26m | ultralytics | 296 | **19.888** | 39.704 | 19.816 | 0.072 | 19.932 |
+| mobilenetv3_small | torchvision | 244 | **3.001** | 5.937 | 2.938 | 0.063 | — |
+| resnet18 | torchvision | 122 | **21.375** | 42.721 | 21.346 | 0.029 | — |
 
 Had script 03 run against the old code, the Pareto plot and every size figure
-would have shown roughly double the published 3.06 / 10.54 / 19.93 MB, with
-nothing to indicate it.
+would have shown roughly double the published sizes, with nothing to indicate it.
 
-The fp16 residual is **−0.028 MB on all three arms**, a constant rather than a
-proportion — the ultralytics checkpoint's metadata (class names, train args,
-version, date) riding along with the weights. That constancy is what shows the
-fp16 `state_dict` is the like-for-like measurement.
+### The measurement is uniform across both backends
 
-### Both are recorded, on every record
+The container overhead — torch's zip headers and alignment padding — is
+**249–271 bytes per tensor for all five arms**, ultralytics and torchvision
+alike. It tracks tensor count, not backend. So the fp16 definition does not break
+on the two baselines; `resnet18` looks unusually cheap per model only because it
+has 122 tensors rather than 236.
+
+There is nothing to cross-check the baselines against: torchvision ships no
+framework checkpoint, so for those two arms the fp16 `state_dict` *is* the
+definition rather than an approximation to a shipped file.
+
+### Correction to a number reported earlier
+
+An earlier note in this file claimed a constant **−0.028 MB** residual between
+the fp16 `state_dict` and the legacy `.pt`. That was partly an artefact of the
+temporary filename the measurement was written to (below). The corrected
+residuals are **−0.041, −0.040, −0.044** — still tight enough across three models
+spanning 6× in size to support the like-for-like reading, but the constant is not
+−0.028 and the published sizes shift slightly more than stated:
+
+| | published | corrected |
+| --- | ---: | ---: |
+| yolo26n | 3.06 | **3.02** |
+| yolo26s | 10.54 | **10.50** |
+| yolo26m | 19.93 | **19.89** |
+
+### Why the filename mattered
+
+`torch.save` writes a zip whose internal record names are prefixed with the
+**archive stem**, stored once in each local header and once in the central
+directory, with 64-byte alignment between records. The same yolo26n weights
+measure 3.021 MB written as `w.pt` and 3.039 MB as
+`a_very_long_temporary_filename.pt` — a 0.018 MB spread, the same order as the
+residual being argued from.
+
+`efficiency._ARCHIVE_NAME` now pins it, and `payload_size_mb` reports the raw
+tensor bytes with no container at all — the quantity that does not move when any
+serialisation convention changes.
+
+### The fields, on every record
 
 | field | what it is |
 | --- | --- |
-| `size_mb_fp32` | fp32 `state_dict` on disk. Identical definition for all five arms and every script — **the Pareto objective** |
-| `size_mb_fp16` | the same weights in half precision. Reproduces the legacy checkpoint measurement to 0.03 MB — **the manuscript number** |
-| `size_mb_checkpoint_file` | the actual `best.pt` size, script 01 only; that is the one script producing such a file |
-| `size_mb` | `== size_mb_fp32`. Kept because `aggregate.py` and `figures.py` read it; prefer the explicit names |
+| `size_mb_fp16` | **PRIMARY.** Half-precision `state_dict` via `torch.save` — what the framework deploys |
+| `size_mb_fp32` | the same weights at full precision, for reference |
+| `size_mb_fp16_payload` | raw fp16 tensor bytes, no container — container-independent |
+| `size_mb_fp32_payload` | raw fp32 tensor bytes |
+| `size_mb_checkpoint_file` | the actual `best.pt`, script 01 only |
+| `size_mb` | `== size_mb_fp16`. Kept because existing code reads it; prefer the explicit names |
 
-`summary_cv.csv` carries `size_mb_fp32` and `size_mb_fp16` side by side, so the
-efficiency table can quote either without recomputing anything.
+`summary_cv.csv` carries `size_mb`, `size_mb_fp16`, `size_mb_fp32` and
+`size_mb_fp16_payload` as separate mean/std column pairs.
+`figures.figure_pareto_size` plots accuracy against fp16 size and labels the axis
+**"model size (MB, fp16 weights as deployed)"**, so the precision is on the plot
+rather than left to a caption. `figure_pareto` still plots GFLOPs.
 
-The eight script-01 records have been backfilled: their original 19.93x survives
-as `size_mb_checkpoint_file`, and `size_mb` now holds the fp32 figure so it means
-one thing across the registry.
+The eight script-01 records are backfilled and refreshed:
+`scripts/backfill_efficiency.py --refresh` recomputes derived fields when a
+*definition* changes, as opposed to the default which only fills nulls. Their
+original 19.93x survives as `size_mb_checkpoint_file`.
 
 ### A second bug found while measuring this
 
 `thop`, which counts FLOPs, **registers buffers on every submodule and leaves
-them there** — 248 of them on yolo26m, worth ~0.074 MB. They land in
-`state_dict()`, so any size measured after a FLOP count was inflated by them.
-`profile()` evaluated its dict literal in order, counting FLOPs *before*
-measuring size, so **every `size_mb` it produced carried that inflation**.
+them there** — 248 on yolo26m, ~0.074 MB. They land in `state_dict()`, so any
+size measured after a FLOP count was inflated. `profile()` evaluated its dict
+literal in order, counting FLOPs *before* measuring size, so **every `size_mb` it
+produced carried that inflation**.
 
-`count_gflops` now strips its own buffers on the way out, `serialised_size_mb`
-filters them regardless, and `profile()` measures sizes first. `profile()` called
-three times in a row on the same module now returns identical numbers; before, it
-did not. `tests/test_efficiency_size.py` pins all three properties.
+`count_gflops` now strips its own buffers, `serialised_size_mb` filters them
+regardless, and `profile()` measures sizes first. Three consecutive `profile()`
+calls now return identical numbers; before, they did not.
+
+### For the manuscript
+
+The published sizes move by ~0.04 MB (3.06 → 3.02, 10.54 → 10.50, 19.93 → 19.89).
+It has to be consistent across the abstract, both tables and the Pareto figure,
+and the methods section must state that sizes are **half-precision weights**.
 
 ## 8. Tests
 
@@ -495,7 +550,7 @@ pip install pytest
 python -m pytest
 ```
 
-31 tests, ~11 s, no GPU and no dataset needed. They cover the registry schema
+35 tests, ~25 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

@@ -6,7 +6,7 @@ Carries over the definitions used in the legacy pipeline (code.ipynb cell 8,
   params  sum of numel() over all parameters
   gflops  2 * MACs from thop on a (1, 3, 224, 224) dummy
 
-SIZE IS MEASURED TWICE, ON PURPOSE.
+SIZE IS MEASURED FOUR WAYS, ON PURPOSE, AND fp16 IS PRIMARY.
 
 The legacy pipeline reported the size of the ultralytics `best.pt` on disk --
 3.063 / 10.538 / 19.932 MB for nano / small / medium, the numbers that are in the
@@ -16,16 +16,25 @@ casts the model to **half precision** before saving, so those are fp16 figures.
 the legacy number (measured: 1.96x, 1.99x, 1.99x). Reporting one where the other
 is expected would silently double every published model size.
 
-So both are recorded, under names that say which is which:
+fp16 is PRIMARY because it is what is actually deployed. The artefact copied
+to a Raspberry Pi is the checkpoint the framework ships, and ultralytics ships
+half precision; an fp32 state_dict is a form that is never deployed, so
+reporting it as "model size" overstates the deployment cost by 2x. fp16 is also
+computable uniformly for all five arms, unlike the checkpoint file size, which
+only exists for the three ultralytics ones.
 
-  size_mb_fp32  fp32 state_dict on disk. Internally consistent across all five
-                arms and every script; this is the Pareto objective.
-  size_mb_fp16  the same weights cast to half. Reproduces the legacy checkpoint
-                measurement to within ~0.04 MB (the residual is the ultralytics
-                checkpoint's metadata: class names, train args, version, date).
-                This is the number the manuscript reports.
-  size_mb       == size_mb_fp32. Kept because existing code and figures read it;
-                prefer the explicit names in anything new.
+  size_mb_fp16          PRIMARY. Half-precision state_dict written by torch.save.
+  size_mb_fp32          the same weights at full precision, for reference.
+  size_mb_fp16_payload  raw fp16 tensor bytes, no container at all.
+  size_mb_fp32_payload  raw fp32 tensor bytes.
+  size_mb               == size_mb_fp16. Kept because existing code reads it;
+                        prefer the explicit names in anything new.
+
+The payload figures exist because the on-disk ones include torch's zip
+container -- about 250 bytes per tensor, uniformly across both backends, so
+0.03-0.07 MB depending on the model. That overhead is a property of the saving
+convention rather than of the model, and the payload is what does not move when
+the convention changes.
 
 Script 01 additionally records `size_mb_checkpoint_file`, the actual `best.pt`
 size, because it is the one script that produces such a file.
@@ -98,29 +107,60 @@ def count_gflops(module, image_size: int = 224) -> float | None:
         module.train(was_training)
 
 
-def serialised_size_mb(module, *, half: bool = False) -> float:
-    """Size of the state_dict written to disk, in MB.
+# torch.save writes a zip whose internal record names are prefixed with the
+# ARCHIVE STEM, stored once in each local header and once in the central
+# directory, with 64-byte alignment padding between records. The serialised size
+# therefore depends on the filename it was written to: the same yolo26n weights
+# measure 3.021 MB as "w.pt" and 3.039 MB as
+# "a_very_long_temporary_filename.pt". A published model size must not depend on
+# that, so the name is fixed here and never taken from the caller.
+_ARCHIVE_NAME = "model.pt"
 
-    `half=True` casts floating-point tensors to fp16 first, which is what
-    ultralytics does before saving a checkpoint. See the module docstring: the
-    two differ by a factor of ~2 and the manuscript quotes the fp16 figures.
-    """
-    import torch
 
-    # Belt and braces alongside _strip_thop_buffers: never let instrumentation
-    # left behind by a FLOP count enter a published model size.
+def _clean_state_dict(module, *, half: bool = False) -> dict:
+    """state_dict without thop instrumentation, optionally cast to fp16."""
     state = {
         key: value
         for key, value in module.state_dict().items()
-        if not key.rsplit(".", 1)[-1] in THOP_BUFFERS
+        if key.rsplit(".", 1)[-1] not in THOP_BUFFERS
     }
     if half:
         state = {
             key: (value.half() if value.is_floating_point() else value)
             for key, value in state.items()
         }
+    return state
+
+
+def payload_size_mb(module, *, half: bool = False) -> float:
+    """Raw tensor bytes, in MB. The container-free weight payload.
+
+    Sums numel * element_size over the state_dict, so it is independent of the
+    serialisation format entirely -- no zip headers, no alignment padding, no
+    filename. This is the quantity that does not move when anything about the
+    saving convention changes, and the one to compare across frameworks:
+    `size_mb_fp16` includes ultralytics' or torch's container, this does not.
+    """
+    state = _clean_state_dict(module, half=half)
+    total = sum(value.numel() * value.element_size() for value in state.values())
+    return round(total / (1024**2), 3)
+
+
+def serialised_size_mb(module, *, half: bool = False) -> float:
+    """Size of the state_dict written to disk by torch.save, in MB.
+
+    `half=True` casts floating-point tensors to fp16 first, which is what
+    ultralytics does before saving a checkpoint. See the module docstring: the
+    two differ by a factor of ~2 and the manuscript quotes the fp16 figures.
+
+    Includes torch's zip container overhead, which is a few KB and scales with
+    the number of tensors. `payload_size_mb` is the same weights without it.
+    """
+    import torch
+
+    state = _clean_state_dict(module, half=half)
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "weights.pt"
+        path = Path(tmp) / _ARCHIVE_NAME
         torch.save(state, path)
         return round(path.stat().st_size / (1024**2), 3)
 
@@ -165,12 +205,18 @@ def profile(module, image_size: int = 224, *, latency: bool = True) -> dict[str,
     # ordering makes the measurement independent of that as well.
     fp32 = serialised_size_mb(module)
     fp16 = serialised_size_mb(module, half=True)
+    payload_fp16 = payload_size_mb(module, half=True)
+    payload_fp32 = payload_size_mb(module)
     stats: dict[str, Any] = {
         "params": count_parameters(module),
         "gflops": count_gflops(module, image_size),
-        "size_mb": fp32,
+        # fp16 is the primary: it is what the framework actually ships to the
+        # device. See the module docstring and HANDOVER.md section 7.
+        "size_mb": fp16,
         "size_mb_fp32": fp32,
         "size_mb_fp16": fp16,
+        "size_mb_fp16_payload": payload_fp16,
+        "size_mb_fp32_payload": payload_fp32,
     }
     if latency:
         stats.update(measure_latency(module, image_size))

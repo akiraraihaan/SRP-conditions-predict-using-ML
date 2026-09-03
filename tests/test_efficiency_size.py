@@ -22,14 +22,21 @@ from srpcard import efficiency  # noqa: E402
 
 @pytest.fixture(scope="module")
 def net():
-    """A small conv net -- enough for thop to instrument, cheap to build."""
+    """A small conv net -- enough for thop to instrument, cheap to build.
+
+    Deliberately over a megabyte of weights: sizes are reported to three decimal
+    places in MB, so a toy model rounds fp32 and fp16 to the same number and the
+    factor-of-two property becomes untestable.
+    """
     return torch.nn.Sequential(
-        torch.nn.Conv2d(3, 8, 3, padding=1),
-        torch.nn.BatchNorm2d(8),
+        torch.nn.Conv2d(3, 16, 3, padding=1),
+        torch.nn.BatchNorm2d(16),
         torch.nn.ReLU(),
-        torch.nn.AdaptiveAvgPool2d(1),
+        torch.nn.AdaptiveAvgPool2d(4),
         torch.nn.Flatten(),
-        torch.nn.Linear(8, 10),
+        torch.nn.Linear(16 * 4 * 4, 2048),
+        torch.nn.ReLU(),
+        torch.nn.Linear(2048, 10),
     )
 
 
@@ -71,11 +78,46 @@ def test_size_ignores_thop_buffers_even_if_present(net):
 
 def test_profile_is_repeatable(net):
     runs = [efficiency.profile(net, 32, latency=False) for _ in range(3)]
-    for key in ("params", "gflops", "size_mb", "size_mb_fp32", "size_mb_fp16"):
+    for key in ("params", "gflops", "size_mb", "size_mb_fp32", "size_mb_fp16",
+                "size_mb_fp16_payload", "size_mb_fp32_payload"):
         assert len({run[key] for run in runs}) == 1, "%s is not repeatable" % key
 
 
-def test_profile_reports_both_sizes(net):
+def test_size_mb_is_the_fp16_alias(net):
+    """fp16 is primary: it is what the framework deploys."""
     stats = efficiency.profile(net, 32, latency=False)
-    assert stats["size_mb"] == stats["size_mb_fp32"]
+    assert stats["size_mb"] == stats["size_mb_fp16"]
     assert stats["size_mb_fp16"] < stats["size_mb_fp32"]
+
+
+def test_payload_is_smaller_than_the_container(net):
+    stats = efficiency.profile(net, 32, latency=False)
+    assert stats["size_mb_fp16_payload"] <= stats["size_mb_fp16"]
+    assert stats["size_mb_fp32_payload"] <= stats["size_mb_fp32"]
+
+
+def test_payload_matches_the_raw_tensor_bytes(net):
+    expected = sum(
+        v.numel() * (2 if v.is_floating_point() else v.element_size())
+        for v in net.state_dict().values()
+    ) / 1024 ** 2
+    assert efficiency.payload_size_mb(net, half=True) == round(expected, 3)
+
+
+def test_size_does_not_depend_on_the_temp_filename(net, tmp_path, monkeypatch):
+    """torch.save embeds the archive stem in every record name, twice, so the
+    measured size moves with the filename. The name must be fixed, not the
+    caller's or the tempdir's."""
+    first = efficiency.serialised_size_mb(net, half=True)
+    monkeypatch.setattr(efficiency, "_ARCHIVE_NAME", "a_very_long_archive_name.pt")
+    inflated = efficiency.serialised_size_mb(net, half=True)
+    monkeypatch.setattr(efficiency, "_ARCHIVE_NAME", "model.pt")
+    assert efficiency.serialised_size_mb(net, half=True) == first
+    # the hazard is real, which is why the name is pinned
+    assert inflated >= first
+
+
+def test_payload_is_immune_to_the_filename(net, monkeypatch):
+    before = efficiency.payload_size_mb(net, half=True)
+    monkeypatch.setattr(efficiency, "_ARCHIVE_NAME", "a_very_long_archive_name.pt")
+    assert efficiency.payload_size_mb(net, half=True) == before
