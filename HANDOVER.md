@@ -38,6 +38,7 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `src/srpcard/aggregate.py` | `summary_cv.csv` and the other manuscript tables |
 | `src/srpcard/figures.py` | matplotlib-only figures, PDF + PNG |
 | `scripts/00_build_folds.py` … `scripts/07_bench_edge.py` | the eight scripts |
+| `scripts/01b_uniform_grid.py` | the 54-run grid for all three YOLO arms, under the uniform protocol |
 | `scripts/restore_arms.py` | puts `artifacts/resolved_arms.yaml` back over `configs/arms.yaml` |
 | `scripts/backfill_efficiency.py` | fills derived efficiency fields in existing registry records |
 | `tests/` | pytest suite; everything writes to `tmp_path`, never to `artifacts/` |
@@ -83,7 +84,8 @@ Strict. Later steps consume what earlier ones write.
 | # | command | runs | notes |
 | ---: | --- | ---: | --- |
 | 1 | `python scripts/00_build_folds.py` | — | **phase 0 preflight** (§4.1), then idempotent verification of the committed artefacts rather than rebuilding them |
-| 2 | `python scripts/01_complete_medium_grid.py` | 8 | **writes `configs/arms.yaml`** |
+| 2 | `python scripts/01_complete_medium_grid.py` | 8 | legacy grid; kept as evidence, **no longer selects anything** — §6 |
+| 2b | `python scripts/01b_uniform_grid.py` | 54 | **writes `configs/arms.yaml`** for all three YOLO arms — §6 |
 | 3 | `python scripts/02_lr_sweep_baselines.py` | 6 | **writes `configs/arms.yaml`** |
 | 4 | `python scripts/03_run_cv.py` | 75 | needs 2 and 3 committed first |
 | 5 | `python scripts/04_run_ablation.py` | 15 | needs 4's `yolo26n` folds for the paired analysis |
@@ -387,50 +389,108 @@ Either way, in order:
 
 ---
 
-## 6. The medium grid spans two protocols
+## 6. Two grids, and which one selects the locked configurations
 
-`artifacts/medium_grid_complete.csv` has 18 rows from two different machines:
+### 6.1 The legacy grid does not reproduce
 
-| rows | where | device | mixed precision |
-| ---: | --- | --- | --- |
-| 46 legacy (10 medium) | the prior study | CPU | **off** |
-| 8 new | Colab T4 | CUDA | **on** |
+`01_complete_medium_grid.py --control-rerun m_ep25_bs8_lr1e-02` re-ran one
+configuration that already existed in the legacy half of the grid:
 
-Script 01 does **not** pass `amp` to ultralytics, so ultralytics' `DEFAULT_CFG
-amp=True` applies and `check_amp()` resolves it against the device: `False` on
-cpu and mps, `True` on CUDA. The legacy half therefore ran fp32 and the new half
-ran mixed precision. Neither is wrong; they are just not the same protocol, and
-the epoch-budget reading of that table depends on them being comparable.
+| | validation macro-F1 |
+| --- | ---: |
+| legacy (CPU, 2023) | 0.7657 |
+| control re-run (T4, same code path) | 0.6235 |
+| **difference** | **−0.1423** |
 
-Every record now carries `extra.amp_requested`, `extra.amp_resolved` and
-`extra.amp_flag`. The eight already-completed records predate that and do not —
-their `library_versions` records `Tesla T4` and `cuda_available: True`, which
-implies `amp_resolved: True`, but implied is not measured and they are left as
-they are.
+Seven times the ±0.02 tolerance. Mixed precision was the first suspect, but the
+trainer log gives a better answer.
 
-### Settling it: `--control-rerun`
+### 6.2 Augmentation was live in all 46 legacy runs
 
-```bash
-python scripts/01_complete_medium_grid.py --control-rerun m_ep25_bs8_lr1e-02
+Script 01 passes no augmentation arguments, so ultralytics' `DEFAULT_CFG`
+applies. The log prints the resolved configuration:
+
+```
+auto_augment=randaugment, erasing=0.4, fliplr=0.5,
+hsv_h=0.015, hsv_s=0.7, hsv_v=0.4, scale=0.5, translate=0.1
 ```
 
-Re-runs one configuration that already exists in the legacy half, on the current
-machine, and prints the new validation macro-F1 against the legacy value with the
-difference. The record is written under a **distinct `run_id`** (its `extra` field
-is `"control_rerun"`, and `extra` is one of `registry.RUN_ID_FIELDS`), carries
-`extra.control_rerun: true`, is **excluded from the argmax**, and `configs/arms.yaml`
-is not touched.
+The manuscript argues explicitly against geometric augmentation (it distorts the
+curve morphology) and against photometric augmentation (meaningless on line
+drawings). `configs/arms.yaml:uniform_protocol` says the same thing in its own
+comment: *a horizontal flip reverses the traversal direction of the load curve*.
+`fliplr=0.5` did that to half the training images, in every legacy run.
 
-The verdict, at a tolerance of ±0.02 (`CONTROL_TOLERANCE` in the script):
+It also explains the −0.1423 better than AMP does. RandAugment and random erasing
+are stochastic, their RNG stream depends on the dataloader worker count, and the
+log shows Colab supplied **2 workers against the 4 requested**. The model saw
+genuinely different images, not the same images at a different precision. On a
+69-image validation partition, seven images separate the two values.
 
-- **within** — the two halves are comparable and the table can be read as one
-  experiment, epoch-budget finding included;
-- **outside** — report it as two protocols and drop the finding. `--amp off` then
-  decomposes the cause: if it lands near the legacy value, mixed precision is the
-  difference; if not, the device or the library versions are.
+This is the **third** defect of the same shape as the unapplied class weights and
+the 14-class confusion matrix: the write-up describes a methodological decision
+the code never made. MIGRATION_NOTES.md §16 documents it, with the log line
+verbatim and the three defects side by side.
 
-The key must be one of `medium_grid.completed_in_old_registry` — a configuration
-with no legacy value has nothing to compare against, and the script refuses it.
+### 6.3 So the grid is re-run: `01b_uniform_grid.py`
+
+A grid searched under a protocol the methods section forbids cannot select the
+locked configurations. Script 01b re-runs the **full 2 × 3 × 3 grid for all three
+YOLO arms — 54 runs** — on the same development split, under the protocol
+scripts 02–05 actually use:
+
+> no augmentation, class weights **applied**, selection on validation macro-F1
+> tie-broken by unweighted validation loss, no early stopping, one device
+
+Each arm's locked configuration is the argmax of validation macro-F1 over its own
+18, and all three are written back into `configs/arms.yaml`. The script prints the
+old and new winner side by side per arm, writes `artifacts/uniform_grid.csv`, and
+snapshots the resolved config.
+
+**Script 01 and its nine records are retained unchanged.** They are the
+reproduction of the thesis grid and the evidence for both the augmentation and
+class-weight findings. Both grids get reported. The records are separable three
+ways — by `script`, by `extra.protocol` (`legacy_unweighted_ultralytics` against
+`uniform`), and by `run_id`, since `extra` is one of `registry.RUN_ID_FIELDS`.
+
+### 6.4 Budget
+
+Projected from the nine yolo26m records already in the registry — eight at 50
+epochs (216–303 s, mean 262) and the 25-epoch control re-run (192 s), which fit
+**122.6 s fixed + 2.79 s/epoch**. Scaling per-epoch cost by GFLOPs (0.398 / 1.486
+/ 4.851) with a floor for the small arms:
+
+| scenario | assumption | total |
+| --- | --- | ---: |
+| optimistic | uniform loop faster: no augmentation, images cached in RAM | **1.20 h** |
+| central | same per-epoch cost as ultralytics | **1.61 h** |
+| pessimistic | every arm as slow as yolo26m | **2.47 h** |
+
+**Comfortably inside three hours even pessimistically, so keep the full grid.**
+`--dry-run` prints this projection against whatever is still outstanding.
+
+Dropping `lr=1e-4` would cut it to 0.80–1.64 h, and I would not: in the legacy
+medium grid every `lr=1e-4` row scored 0.049–0.111 validation macro-F1, against
+0.100 for chance on ten classes. That is not a wasted arm of the sweep — it is
+the evidence that the search bracketed the optimum from below. Without it the
+reported grid has its winner at `lr=1e-2`, the top of a two-point range, with
+nothing showing the bottom was explored. The saving is under an hour; the
+concession is a reviewer question that cannot be answered after the fact.
+
+### 6.5 The preflight now names the protocol
+
+Phase 0's configuration table carries a **resolved by** column, and **fails** while
+any arm's locked value still comes from the legacy augmented grid:
+
+```
+  arm         epochs batch lr     state    resolved by
+  yolo26n     50     16    0.01   locked   LEGACY grid (ultralytics augmentation defaults, unweighted)
+  ...
+  [FAIL] 3 arm(s) still carry a locked value from the LEGACY grid
+```
+
+`lr_source` written by 01b names both the grid and the protocol, so a locked
+value can never again be read without knowing which search produced it.
 
 ## 7. Model size: fp16 is primary
 
@@ -550,7 +610,7 @@ pip install pytest
 python -m pytest
 ```
 
-35 tests, ~25 s, no GPU and no dataset needed. They cover the registry schema
+43 tests, ~57 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

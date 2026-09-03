@@ -929,3 +929,89 @@ happened to give the better test score.
 That is one fold out of fifteen and it settles nothing — the case for macro-F1
 selection is the systematic-bias argument in §15.3, not a per-fold outcome. It is
 recorded here so the comparison is not quietly omitted.
+
+---
+
+## 16. Augmentation was active in the whole legacy grid
+
+The third defect of the same shape as §5.4 (class weights computed but never
+applied) and §13.1 (a 14-class confusion matrix reported for a 10-class problem):
+**the write-up describes a methodological decision the code never made.**
+
+### 16.1 What the trainer log shows
+
+`model.train(...)` in `code.ipynb` cell 9 passes no augmentation arguments, so
+ultralytics' `DEFAULT_CFG` applies in full. The trainer log from the control
+re-run of `m_ep25_bs8_lr1e-02` prints the resolved configuration verbatim:
+
+```
+auto_augment=randaugment, erasing=0.4, fliplr=0.5,
+hsv_h=0.015, hsv_s=0.7, hsv_v=0.4, scale=0.5, translate=0.1
+```
+
+All 46 legacy grid runs therefore trained under RandAugment, random erasing,
+horizontal flip on half the images, HSV jitter, random scaling and translation.
+
+### 16.2 Why that contradicts the write-up
+
+Two independent places in the project reject exactly these transforms:
+
+1. **The manuscript** argues against geometric augmentation because it distorts
+   the curve morphology that carries the diagnostic signal, and against
+   photometric augmentation because it is meaningless on line drawings.
+2. **`configs/arms.yaml:uniform_protocol`** carries the same reasoning in its own
+   comment: *"Dynamometer cards are not flip- or rotation-invariant: a horizontal
+   flip reverses the traversal direction of the load curve."*
+
+`fliplr=0.5` reverses the traversal direction of half the training images. HSV
+jitter perturbs colour channels on what are effectively binary line plots.
+Neither is a defensible transform for this data, and the write-up says so.
+
+### 16.3 How it was found, and the size of the effect
+
+Script `01`'s `--control-rerun` re-ran one configuration that already existed in
+the legacy half of the grid, on the current machine:
+
+| | validation macro-F1 |
+| --- | ---: |
+| legacy `m_ep25_bs8_lr1e-02` (CPU, 2023 run) | 0.7657 |
+| control re-run (T4, same code path) | 0.6235 |
+| **difference** | **−0.1423** |
+
+Seven times the ±0.02 comparability tolerance. Mixed precision was the initial
+suspect — the legacy runs were CPU (`check_amp()` returns `False` on cpu/mps)
+and the new ones CUDA — but augmentation explains it far better:
+
+- RandAugment and random erasing are **stochastic**, and their RNG stream depends
+  on the **dataloader worker count**;
+- the log shows Colab supplied **2 workers against the 4 requested**.
+
+So the model saw genuinely different images, not the same images at a different
+numerical precision. On a 69-image validation partition, seven images separate
+0.7657 from 0.6235.
+
+### 16.4 Consequence
+
+The legacy grid searched hyperparameters under a protocol the paper's methods
+section forbids, so it cannot select the locked configurations. `scripts/01b_uniform_grid.py`
+re-runs the full 2 × 3 × 3 grid for all three YOLO arms — 54 runs — on the same
+development split, under the protocol scripts 02–05 use: **no augmentation**,
+class weights applied, validation macro-F1 selection tie-broken on unweighted
+validation loss, no early stopping.
+
+Script `01` and its nine records are **retained unchanged**. They are the
+reproduction of the thesis grid and the evidence for this finding and for §5.4.
+Both grids are reported; records are separable by `script`, by `split_kind` and
+by `extra.protocol` (`legacy_unweighted_ultralytics` against `uniform`).
+
+### 16.5 The three defects together
+
+| § | what the write-up claims | what the code did |
+| --- | --- | --- |
+| 5.4 | class-weighted loss handles the imbalance | weights computed, printed, charted, never passed to the trainer |
+| 13.1 | a 10-class confusion matrix | 14 directories, four classes duplicated under a numeric prefix, every metric deflated |
+| **16** | **no augmentation: it distorts curve morphology** | **RandAugment, erasing, fliplr 0.5, HSV jitter, scale, translate — all on** |
+
+Each was invisible in the saved outputs. Each was found by re-running the code
+rather than by reading it: §5.4 by grepping for the variable's only use, §13.1 by
+asserting the class count, §16 by a control re-run that failed its tolerance.

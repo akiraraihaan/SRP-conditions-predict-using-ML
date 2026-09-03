@@ -282,6 +282,27 @@ def _preflight_checkpoints(cfg: dict) -> tuple[bool, dict]:
     return ok, {"arms": results}
 
 
+def describe_lr_source(lr_source) -> str:
+    """Which grid and which protocol produced a locked hyperparameter.
+
+    `lr_source` is a free-text provenance string written by the resolving
+    script. This reduces it to the one thing that must be visible at a glance:
+    whether the value came from the legacy augmented grid or the uniform one.
+    """
+    if not lr_source:
+        return "unknown -- no lr_source recorded"
+    text = str(lr_source)
+    if text.startswith("TBD"):
+        return "NOT RESOLVED -- run 02_lr_sweep_baselines.py"
+    if "uniform_grid:01b" in text:
+        return "01b uniform grid (no augmentation, weighted loss)"
+    if "lr_sweep:02" in text:
+        return "02 lr sweep (uniform protocol)"
+    if "grid_search:" in text:
+        return "LEGACY grid (ultralytics augmentation defaults, unweighted)"
+    return text[:58]
+
+
 def _preflight_config(cfg: dict) -> tuple[bool, dict]:
     """Is the hyperparameter configuration whole, and did any of it get lost?
 
@@ -295,19 +316,48 @@ def _preflight_config(cfg: dict) -> tuple[bool, dict]:
     arms_cfg = load_arms_config()
     ok = True
 
-    print("  %-20s %-8s %-8s %-10s %s" % ("arm", "epochs", "batch", "lr", "state"))
+    # The protocol a locked value came from matters as much as the value: two
+    # grids now exist for the YOLO arms, one searched under ultralytics'
+    # augmentation defaults and one under the uniform protocol, and they do not
+    # select the same configurations. See MIGRATION_NOTES.md section 16.
+    print("  %-20s %-7s %-6s %-8s %-11s %s"
+          % ("arm", "epochs", "batch", "lr", "state", "resolved by"))
     for name, arm in sorted((arms_cfg.get("arms") or {}).items()):
         if arm.get("lr") is None:
-            state = "lr NULL -- 02_lr_sweep_baselines.py has not resolved it"
+            state = "lr NULL"
         elif arm.get("provisional"):
-            state = "PROVISIONAL -- 01_complete_medium_grid.py has not resolved it"
+            state = "PROVISIONAL"
         elif arm.get("locked"):
             state = "locked"
         else:
             state = "-"
         print(
-            "  %-20s %-8s %-8s %-10s %s"
-            % (name, arm.get("epochs"), arm.get("batch"), arm.get("lr"), state)
+            "  %-20s %-7s %-6s %-8s %-11s %s"
+            % (name, arm.get("epochs"), arm.get("batch"), arm.get("lr"), state,
+               describe_lr_source(arm.get("lr_source")))
+        )
+
+    legacy_sourced = sorted(
+        name
+        for name, arm in (arms_cfg.get("arms") or {}).items()
+        if arm.get("lr") is not None
+        and "grid_search:" in str(arm.get("lr_source") or "")
+    )
+    if legacy_sourced:
+        ok = False
+        print(
+            "\n  [FAIL] %d arm(s) still carry a locked value from the LEGACY grid:"
+            % len(legacy_sourced)
+        )
+        print("         %s" % ", ".join(legacy_sourced))
+        print(
+            "         That grid was searched under ultralytics' augmentation\n"
+            "         defaults -- RandAugment, erasing, fliplr 0.5, HSV jitter --\n"
+            "         which the manuscript and uniform_protocol both reject, and\n"
+            "         under an unweighted loss. Re-resolve them under the protocol\n"
+            "         that scripts 02-05 actually use:\n"
+            "             python scripts/01b_uniform_grid.py\n"
+            "         See MIGRATION_NOTES.md section 16."
         )
 
     pending = unresolved_arms(arms_cfg)
