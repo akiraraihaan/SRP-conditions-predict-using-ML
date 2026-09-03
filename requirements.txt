@@ -39,3 +39,6 @@ statsmodels==0.14.6
 # NOTE for scripts/07_bench_edge.py on a Raspberry Pi: that script needs only
 # torch (CPU), torchvision, pillow, numpy, psutil and PyYAML. It never imports
 # ultralytics training code and never touches CUDA.
+
+# --- development only; not needed to run any script ---
+pytest>=8.0

@@ -496,17 +496,23 @@ def main() -> int:
             % (val_metrics["f1_macro"], test_metrics["f1_macro"], wall)
         )
 
-        size_mb = round(weights.stat().st_size / (1024**2), 3)
-        # params and gflops from the trained module itself. size_mb stays the
-        # checkpoint file size, which is what the legacy table reports.
-        efficiency = {"size_mb": size_mb}
+        # Three size measurements. The checkpoint on disk is fp16 (ultralytics
+        # halves the model before saving), which is where the manuscript's
+        # 3.063 / 10.538 / 19.932 MB come from; a fp32 state_dict is ~2x that.
+        # See src/srpcard/efficiency.py.
+        checkpoint_mb = round(weights.stat().st_size / (1024**2), 3)
+        efficiency = {"size_mb_checkpoint_file": checkpoint_mb}
         try:
-            measured = profile(model.model, LEGACY_IMG_SIZE, latency=False)
-            efficiency["params"] = measured["params"]
-            efficiency["gflops"] = measured["gflops"]
+            efficiency.update(profile(model.model, LEGACY_IMG_SIZE, latency=False))
             print(
-                "  params %s  gflops %s"
-                % (efficiency["params"], efficiency["gflops"])
+                "  params %s  gflops %s  size_mb fp32 %s / fp16 %s / .pt %s"
+                % (
+                    efficiency["params"],
+                    efficiency["gflops"],
+                    efficiency["size_mb_fp32"],
+                    efficiency["size_mb_fp16"],
+                    checkpoint_mb,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - a null here is better than a crash
             print("  [efficiency] could not profile the trained module: %s" % exc)

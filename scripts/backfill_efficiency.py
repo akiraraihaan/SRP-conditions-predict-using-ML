@@ -1,14 +1,25 @@
 #!/usr/bin/env python
-"""backfill_efficiency -- fill null params/gflops in existing registry records.
+"""backfill_efficiency -- fill null efficiency fields in existing registry records.
 
     python scripts/backfill_efficiency.py --dry-run   # report, change nothing
     python scripts/backfill_efficiency.py             # write, after a .bak copy
 
-`params` and `gflops` are a pure function of (architecture, num_classes,
-image_size), so a record that is missing them can have them derived rather than
-being re-run. Script 01's first eight records were written before it profiled the
-trained module and carry nulls; leaving them would force aggregate.py and
-figures.py to special-case a value that is perfectly well defined.
+`params`, `gflops`, `size_mb_fp32` and `size_mb_fp16` are pure functions of
+(architecture, num_classes, image_size), so a record missing them can have them
+derived rather than re-run. Leaving them null would force aggregate.py and
+figures.py to special-case values that are perfectly well defined.
+
+Two rounds of this have been needed:
+
+  params / gflops   script 01's first eight records were written before it
+                    profiled the trained module.
+  size_mb_*         `size_mb` used to mean the ultralytics checkpoint file size
+                    in script 01 and an fp32 state_dict everywhere else -- two
+                    different quantities under one name, differing by ~2x,
+                    with the manuscript quoting the smaller. The old value is
+                    preserved as `size_mb_checkpoint_file` and `size_mb` is
+                    rewritten to the fp32 figure so it means one thing across
+                    the registry. See src/srpcard/efficiency.py.
 
 This is the one place in the repository that REWRITES artifacts/registry.jsonl
 rather than appending to it. It is therefore deliberately narrow:
@@ -37,7 +48,11 @@ from srpcard.config import load_arms_config, load_data_config  # noqa: E402
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import build_model  # noqa: E402
 
-FIELDS = ("params", "gflops")
+DERIVED_FIELDS = ("params", "gflops", "size_mb_fp32", "size_mb_fp16")
+
+# Records written before size_mb was disambiguated: script 01 stored the .pt file
+# size there. Move it to its own name and let size_mb become the fp32 figure.
+LEGACY_SIZE_SCRIPTS = ("01_complete_medium_grid",)
 
 
 def rule(title: str) -> None:
@@ -45,17 +60,27 @@ def rule(title: str) -> None:
 
 
 def measure(arm: str, arms_cfg, data_cfg, cache: dict) -> dict | None:
-    """params/gflops for one arm, built once and reused."""
+    """The derived efficiency fields for one arm, built once and reused."""
     if arm in cache:
         return cache[arm]
     try:
         bundle = build_model(arm, arms_cfg, data_cfg, with_efficiency=False)
         stats = profile(bundle.module, int(arms_cfg["shared"]["image_size"]), latency=False)
-        cache[arm] = {"params": stats["params"], "gflops": stats["gflops"]}
+        cache[arm] = {field: stats[field] for field in DERIVED_FIELDS}
     except Exception as exc:  # noqa: BLE001 - reported, never fatal
         print("  [%s] could not build or profile: %s" % (arm, exc))
         cache[arm] = None
     return cache[arm]
+
+
+def needs_work(record: dict) -> bool:
+    if any(record.get(field) is None for field in DERIVED_FIELDS):
+        return True
+    # a pre-disambiguation record: size_mb still holds the checkpoint file size
+    return (
+        record.get("script") in LEGACY_SIZE_SCRIPTS
+        and record.get("size_mb_checkpoint_file") is None
+    )
 
 
 def main() -> int:
@@ -73,9 +98,9 @@ def main() -> int:
         print("\n  Nothing to do.")
         return 0
 
-    incomplete = [r for r in records if any(r.get(f) is None for f in FIELDS)]
+    incomplete = [r for r in records if needs_work(r)]
     if not incomplete:
-        print("\n  Every record already carries params and gflops. Nothing to do.")
+        print("\n  Every record already carries the derived efficiency fields.")
         return 0
 
     print("  missing  : %d record(s)" % len(incomplete))
@@ -84,37 +109,51 @@ def main() -> int:
     cache: dict = {}
 
     print(
-        "\n  %-16s %-24s %-18s %12s %12s"
-        % ("run_id", "script", "arm", "params", "gflops")
+        "\n  %-16s %-18s %10s %8s %9s %9s %10s"
+        % ("run_id", "arm", "params", "gflops", "fp32", "fp16", ".pt file")
     )
     filled = 0
     for record in incomplete:
         arm = record.get("arm")
         stats = measure(arm, arms_cfg, data_cfg, cache) if arm else None
         if stats is None:
-            print(
-                "  %-16s %-24s %-18s %12s %12s   SKIPPED"
-                % (record.get("run_id"), record.get("script"), arm, "-", "-")
-            )
+            print("  %-16s %-18s   SKIPPED" % (record.get("run_id"), arm))
             continue
+
         changed = []
-        for field in FIELDS:
+        # Move the old checkpoint-file size out of size_mb before size_mb is
+        # redefined, so the published figure is preserved rather than replaced.
+        if (
+            record.get("script") in LEGACY_SIZE_SCRIPTS
+            and record.get("size_mb_checkpoint_file") is None
+        ):
+            record["size_mb_checkpoint_file"] = record.get("size_mb")
+            changed.append("size_mb_checkpoint_file")
+
+        for field in DERIVED_FIELDS:
             if record.get(field) is None:
                 record[field] = stats[field]
                 changed.append(field)
+
+        if record.get("size_mb") != stats["size_mb_fp32"]:
+            record["size_mb"] = stats["size_mb_fp32"]
+            changed.append("size_mb->fp32")
+
         if changed:
             filled += 1
         print(
-            "  %-16s %-24s %-18s %12s %12.4f   %s"
+            "  %-16s %-18s %10s %8.4f %9.3f %9.3f %10s"
             % (
                 record.get("run_id"),
-                record.get("script"),
                 arm,
                 stats["params"],
                 stats["gflops"],
-                "+".join(changed) or "already set",
+                stats["size_mb_fp32"],
+                stats["size_mb_fp16"],
+                record.get("size_mb_checkpoint_file", "-"),
             )
         )
+        print("      %s" % ", ".join(changed))
 
     if args.dry_run:
         print("\n  --dry-run: %d record(s) would be filled. Nothing written." % filled)
@@ -135,7 +174,7 @@ def main() -> int:
     print("  rewrote  : %s  (%d record(s) filled)" % (path, filled))
 
     reloaded = registry.load_registry(path)
-    still_null = [r for r in reloaded if any(r.get(f) is None for f in FIELDS)]
+    still_null = [r for r in reloaded if any(r.get(f) is None for f in DERIVED_FIELDS)]
     print(
         "  verify   : %d record(s) re-read, %d still carrying a null"
         % (len(reloaded), len(still_null))

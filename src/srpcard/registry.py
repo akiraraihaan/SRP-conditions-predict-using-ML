@@ -358,7 +358,12 @@ def build_record(
         # --- efficiency ---
         "params": efficiency.get("params"),
         "gflops": efficiency.get("gflops"),
+        # Three size measurements, never one. fp32 and fp16 differ by ~2x, and the
+        # manuscript's published sizes are the fp16 ones. See efficiency.py.
         "size_mb": efficiency.get("size_mb"),
+        "size_mb_fp32": efficiency.get("size_mb_fp32"),
+        "size_mb_fp16": efficiency.get("size_mb_fp16"),
+        "size_mb_checkpoint_file": efficiency.get("size_mb_checkpoint_file"),
         "latency_ms_mean": efficiency.get("latency_ms_mean"),
         "latency_ms_std": efficiency.get("latency_ms_std"),
         # --- provenance ---

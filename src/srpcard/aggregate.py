@@ -36,7 +36,12 @@ SCALAR_METRICS = [
     "recall_macro",
     "params",
     "gflops",
+    # Both size measurements reach the summary table: the Pareto analysis uses
+    # the fp32 one for internal consistency, the manuscript quotes the fp16 one,
+    # and they differ by ~2x. See src/srpcard/efficiency.py.
     "size_mb",
+    "size_mb_fp32",
+    "size_mb_fp16",
     "latency_ms_mean",
     "wall_time_s",
 ]

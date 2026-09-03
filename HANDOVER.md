@@ -39,7 +39,8 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `src/srpcard/figures.py` | matplotlib-only figures, PDF + PNG |
 | `scripts/00_build_folds.py` … `scripts/07_bench_edge.py` | the eight scripts |
 | `scripts/restore_arms.py` | puts `artifacts/resolved_arms.yaml` back over `configs/arms.yaml` |
-| `scripts/backfill_efficiency.py` | fills null `params`/`gflops` in existing registry records |
+| `scripts/backfill_efficiency.py` | fills derived efficiency fields in existing registry records |
+| `tests/` | pytest suite; everything writes to `tmp_path`, never to `artifacts/` |
 | `notebooks/colab_runner.ipynb` | **the primary runner**, 19 cells, no experiment logic |
 | `docs/COLAB_SETUP.md` | Drive layout, dataset upload, the `artifacts/` symlink, CPU-runtime fallback |
 | `notebooks/kaggle_runner.ipynb` | thin runner, 13 cells, no experiment logic *(alternative platform)* |
@@ -431,7 +432,84 @@ The verdict, at a tolerance of ±0.02 (`CONTROL_TOLERANCE` in the script):
 The key must be one of `medium_grid.completed_in_old_registry` — a configuration
 with no legacy value has nothing to compare against, and the script refuses it.
 
-## 7. Local development
+## 7. Model size is measured twice
+
+**`size_mb` was not one quantity.** Script 01 recorded the ultralytics
+checkpoint file size; scripts 02–05 would have recorded an fp32 `state_dict`.
+Ultralytics strips the optimizer and casts the model to **half precision** before
+saving, so the two differ by a factor of ~2 — and the legacy checkpoint figures
+are the ones in the manuscript abstract and two of its tables.
+
+Measured on this machine, three fresh builds per arm, all stable:
+
+| arm | params | legacy `.pt` | fp32 `state_dict` | fp16 `state_dict` | fp32/legacy | fp16 − legacy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| yolo26n | 1,543,914 | 3.063 | 5.998 | 3.034 | 1.96× | −0.029 |
+| yolo26s | 5,455,818 | 10.538 | 20.950 | 10.510 | 1.99× | −0.028 |
+| yolo26m | 10,366,026 | 19.932 | 39.719 | 19.904 | 1.99× | −0.028 |
+| mobilenetv3_small | 1,528,106 | — | 5.946 | 3.007 | — | — |
+| resnet18 | 11,181,642 | — | 42.727 | 21.381 | — | — |
+
+Had script 03 run against the old code, the Pareto plot and every size figure
+would have shown roughly double the published 3.06 / 10.54 / 19.93 MB, with
+nothing to indicate it.
+
+The fp16 residual is **−0.028 MB on all three arms**, a constant rather than a
+proportion — the ultralytics checkpoint's metadata (class names, train args,
+version, date) riding along with the weights. That constancy is what shows the
+fp16 `state_dict` is the like-for-like measurement.
+
+### Both are recorded, on every record
+
+| field | what it is |
+| --- | --- |
+| `size_mb_fp32` | fp32 `state_dict` on disk. Identical definition for all five arms and every script — **the Pareto objective** |
+| `size_mb_fp16` | the same weights in half precision. Reproduces the legacy checkpoint measurement to 0.03 MB — **the manuscript number** |
+| `size_mb_checkpoint_file` | the actual `best.pt` size, script 01 only; that is the one script producing such a file |
+| `size_mb` | `== size_mb_fp32`. Kept because `aggregate.py` and `figures.py` read it; prefer the explicit names |
+
+`summary_cv.csv` carries `size_mb_fp32` and `size_mb_fp16` side by side, so the
+efficiency table can quote either without recomputing anything.
+
+The eight script-01 records have been backfilled: their original 19.93x survives
+as `size_mb_checkpoint_file`, and `size_mb` now holds the fp32 figure so it means
+one thing across the registry.
+
+### A second bug found while measuring this
+
+`thop`, which counts FLOPs, **registers buffers on every submodule and leaves
+them there** — 248 of them on yolo26m, worth ~0.074 MB. They land in
+`state_dict()`, so any size measured after a FLOP count was inflated by them.
+`profile()` evaluated its dict literal in order, counting FLOPs *before*
+measuring size, so **every `size_mb` it produced carried that inflation**.
+
+`count_gflops` now strips its own buffers on the way out, `serialised_size_mb`
+filters them regardless, and `profile()` measures sizes first. `profile()` called
+three times in a row on the same module now returns identical numbers; before, it
+did not. `tests/test_efficiency_size.py` pins all three properties.
+
+## 8. Tests
+
+```bash
+pip install pytest
+python -m pytest
+```
+
+31 tests, ~11 s, no GPU and no dataset needed. They cover the registry schema
+guard, hyperparameter drift, the config snapshot and restore, the two size
+measurements and the thop cleanup, and the Colab symlink cell — the last by
+reading cell 5's source out of the notebook and executing it against `tmp_path`,
+so the notebook itself is tested rather than a copy of its logic.
+
+**No test may write inside `artifacts/`.** Several files there are tracked, and
+an earlier ad-hoc test that used save-and-restore around the real paths deleted
+`artifacts/resolved_arms.yaml` twice — save-and-restore does not survive a test
+that fails partway through. The isolation is structural instead: every fixture in
+`tests/conftest.py` hands back a `tmp_path` directory, `config.arms_path` is
+monkeypatched where a test needs to rewrite `arms.yaml`, and an autouse fixture
+fails any test that creates or removes a file in the real `artifacts/`.
+
+## 9. Local development
 
 ```bash
 export SRPCARD_DATA_ROOT=/path/to/dataset      # the 10 class directories
