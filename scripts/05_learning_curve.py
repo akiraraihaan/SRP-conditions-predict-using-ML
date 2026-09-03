@@ -231,6 +231,7 @@ def main() -> int:
                 wall_time_s=wall,
                 determinism_status=result.determinism,
                 extra={
+                    "protocol": "uniform",
                     "learning_curve": True,
                     "fraction": spec["fraction"],
                     "n_train": len(subset),

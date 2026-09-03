@@ -266,6 +266,9 @@ def main() -> int:
             wall_time_s=wall,
             determinism_status=result.determinism,
             extra={
+                # Scopes the drift guard: records from script 01 (legacy
+                # augmented protocol) must never be compared against these.
+                "protocol": "uniform",
                 "selection_metric": "val_f1_macro",
                 "selection_tiebreak": "val_loss_unweighted",
                 # what a val-loss criterion WOULD have picked -- recorded, not acted on

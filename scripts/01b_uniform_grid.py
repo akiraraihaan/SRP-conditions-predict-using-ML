@@ -86,6 +86,10 @@ from srpcard.train import (  # noqa: E402
 )
 
 SCRIPT = "01b_uniform_grid"
+# Tags every record, and scopes the grid-membership check. Script 01 writes
+# "legacy_unweighted_ultralytics" for the same arms on the same split, and the
+# two must never be pooled.
+PROTOCOL = "uniform"
 YOLO_ARMS = ["yolo26n", "yolo26s", "yolo26m"]
 # Distinct from DEV_SEED in script 02 (20000) and from the CV run_seed space.
 GRID_SEED = 30000
@@ -297,8 +301,25 @@ def main() -> int:
         return 0
 
     if todo:
-        registry.assert_arms_match_registry(
-            script=SCRIPT, arms=arms, arms_cfg=arms_cfg, split_kind="dev"
+        # NOT the locked-config drift guard: this script sweeps epochs/batch/lr
+        # across 18 combinations per arm, so it can never match a single locked
+        # value. See registry.SWEEP_SCRIPTS. What it asserts instead is that every
+        # configuration it is about to run, and every one it has already run under
+        # this same script and protocol, is a point of the grid declared in
+        # configs/arms.yaml -- which catches the grid being edited between
+        # sessions without firing on the sweep itself.
+        registry.assert_sweep_within_grid(
+            script=SCRIPT,
+            protocol=PROTOCOL,
+            arms=arms,
+            grid_points={
+                (int(e), int(b), float(lr))
+                for e in epochs_values
+                for b in batch_values
+                for lr in lr_values
+            },
+            planned=[(s["epochs"], s["batch"], s["lr"]) for s in specs],
+            split_kind="dev",
         )
         weights_proof = require_class_weights_verified(
             int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
@@ -378,7 +399,7 @@ def main() -> int:
                 extra={
                     "key": spec["key"],
                     # The two fields that keep this grid separable from script 01's.
-                    "protocol": "uniform",
+                    "protocol": PROTOCOL,
                     "grid": "uniform_18",
                     "augmentation": "none",
                     "class_weights_applied": True,

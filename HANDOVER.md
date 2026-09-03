@@ -290,13 +290,42 @@ Four checks now close it, at every point where it could do damage:
 | where | what it does |
 | --- | --- |
 | `00_build_folds.py` phase 0 | reports each arm's `epochs`/`batch`/`lr` and whether it is `locked`, `lr: null` or `provisional`, and whether `artifacts/resolved_arms.yaml` exists and **differs** from `configs/arms.yaml`. A difference is the signature of a lost config, and the preflight exits non-zero |
-| scripts 03, 04, 05 | before the run loop, `registry.assert_arms_match_registry` compares the loaded config against the `epochs`/`batch`/`lr` recorded in completed runs of the same arm and `split_kind`. On a mismatch it **aborts**, printing both configurations side by side and every affected `run_id`. Never proceeds, never treats it as a new run |
+| scripts 03, 04, 05 | before the run loop, `registry.assert_arms_match_registry` compares the loaded config against the `epochs`/`batch`/`lr` recorded in completed runs — scoped by arm, `split_kind`, **script and `extra.protocol`** (§4.5.1). On a mismatch it **aborts**, printing what it compared, both configurations side by side and every conflicting `run_id` |
+| scripts 01, 01b, 02 | these **sweep** those fields, so they get `registry.assert_sweep_within_grid` instead: every configuration planned or already run must be a point of the grid declared in `configs/arms.yaml` (§4.5.1) |
 | `aggregate.py` | `assert_hyperparameters_unanimous` refuses to build `summary_cv.csv` or `summary_per_class.csv` when an arm's records are not unanimous, naming the offending `run_ids` |
 | scripts 01, 02 | snapshot the resolved config to `artifacts/resolved_arms.yaml` so it can be recovered — §4.6 |
 
-Scripts 01 and 02 are deliberately **not** guarded this way: they *sweep*
-hyperparameters, so varying `epochs`/`batch`/`lr` across their records is the point.
-The guard applies to the scripts that write cv-kind records.
+#### 4.5.1 Two kinds of script, two different checks
+
+`registry.SWEEP_SCRIPTS` — `01_complete_medium_grid`, `01b_uniform_grid`,
+`02_lr_sweep_baselines` — deliberately run many `(epochs, batch, lr)`
+combinations, so comparing them against a single locked value can never match.
+Calling the locked-config guard from one of them now raises `ValueError` naming
+the alternative, rather than aborting a legitimate sweep. **Add a new sweep
+script to that set as well as writing it**, or its first run will abort against
+whatever `configs/arms.yaml` happens to hold.
+
+They get a **membership** check instead: every configuration the sweep is about
+to run, and every one it has already run under the same script and protocol, must
+be a point of the grid declared in `configs/arms.yaml`. That catches the error a
+sweep can actually suffer — the grid edited between sessions, so the registry
+ends up holding points from two different grids.
+
+`registry.LOCKED_CONFIG_SCRIPTS` — 03, 04, 05 — share one configuration per arm
+and are therefore compared against each other, but **not** against the sweeps.
+
+The comparison is also scoped by **`extra.protocol`**. Scripts 01 and 01b both
+write `split_kind: "dev"` for `yolo26m`; one is the legacy augmented protocol and
+one the uniform one. A guard filtering on arm and `split_kind` alone pooled them —
+precisely what `extra.protocol` was introduced to prevent — and then proposed
+deleting the conflicting runs, which would have destroyed the nine script 01
+records that evidence the augmentation and class-weight findings.
+
+The message now leads with what it compared (arm, `split_kind`, protocol,
+scripts) and names each conflicting record's source script. It proposes deletion
+**only** when the conflict is same-script, same-protocol. When the records come
+from elsewhere it says so, calls it a scoping error in the caller, and states
+explicitly: *do not delete those records, do not run `restore_arms.py`*.
 
 ### 4.6 Recovering a resolved config
 
@@ -610,7 +639,7 @@ pip install pytest
 python -m pytest
 ```
 
-43 tests, ~57 s, no GPU and no dataset needed. They cover the registry schema
+56 tests, ~12 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

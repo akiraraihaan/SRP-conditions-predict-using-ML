@@ -418,25 +418,74 @@ def print_plan(
 # hyperparameter regimes for one arm, which aggregate.py would then average
 # together without noticing.
 #
-# The realistic way that happens: scripts 01 and 02 rewrite configs/arms.yaml,
+# The realistic way that happens: scripts 01b and 02 rewrite configs/arms.yaml,
 # the session dies before that file is committed, and the next clone carries the
-# PROVISIONAL yolo26m config (or a baseline lr of null) again.
+# unresolved config again.
+#
+# TWO KINDS OF SCRIPT, TWO DIFFERENT CHECKS.
+#
+# A script that runs ONE locked configuration per arm must agree with every
+# other such script about what that configuration is -> assert_config_matches_registry.
+#
+# A script that SWEEPS epochs/batch/lr cannot: it deliberately runs many
+# combinations, so comparing them against a single locked value can never match.
+# Sweeps get a membership check against their declared grid instead
+# -> assert_sweep_within_grid.
+
+# The sweep scripts. Add a new one HERE as well as to the script itself, or its
+# first run will abort against whatever configs/arms.yaml happens to hold.
+SWEEP_SCRIPTS = frozenset(
+    {
+        "01_complete_medium_grid",  # legacy protocol, the 2x3x3 medium grid
+        "01b_uniform_grid",         # uniform protocol, 2x3x3 for all three YOLO arms
+        "02_lr_sweep_baselines",    # uniform protocol, lr sweep for the two baselines
+    }
+)
+
+# The scripts that consume a locked configuration. They share one config per arm
+# and so are compared against each other.
+LOCKED_CONFIG_SCRIPTS = frozenset(
+    {"03_run_cv", "04_run_ablation", "05_learning_curve"}
+)
+
+UNIFORM_PROTOCOL = "uniform"
 
 
 class HyperparameterDriftError(RuntimeError):
     """The loaded config disagrees with the config completed runs were trained under."""
 
 
+def record_protocol(record: dict[str, Any]) -> str | None:
+    """The protocol a record was produced under, from extra.protocol."""
+    return (record.get("extra") or {}).get("protocol")
+
+
 def completed_hyperparameters(
-    arm: str, split_kind: str = "cv", path: Path | None = None
+    arm: str,
+    split_kind: str = "cv",
+    path: Path | None = None,
+    *,
+    scripts: frozenset[str] | set[str] | None = None,
+    protocol: str | None = None,
 ) -> dict[tuple, list[dict[str, Any]]]:
     """Completed runs of one arm, grouped by their (epochs, batch, lr).
 
-    More than one key means the registry already holds mixed regimes.
+    `scripts` and `protocol` narrow the comparison, and narrowing it is the
+    point: scripts 01 and 01b both write split_kind "dev" for yolo26m, one under
+    the legacy augmented protocol and one under the uniform one. Pooling those is
+    exactly what extra.protocol was introduced to prevent, so a caller that
+    cares must say which protocol it is asking about.
+
+    More than one key in the result means the registry holds mixed regimes
+    WITHIN that scope.
     """
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for record in load_registry(path):
         if record.get("arm") != arm or record.get("split_kind") != split_kind:
+            continue
+        if scripts is not None and record.get("script") not in scripts:
+            continue
+        if protocol is not None and record_protocol(record) != protocol:
             continue
         key = tuple(record.get(field) for field in RUN_DEFINING_HYPERPARAMETERS)
         groups.setdefault(key, []).append(record)
@@ -458,15 +507,34 @@ def assert_config_matches_registry(
     batch: int,
     lr: float,
     split_kind: str = "cv",
+    protocol: str | None = UNIFORM_PROTOCOL,
+    scripts: frozenset[str] | set[str] | None = None,
     path: Path | None = None,
 ) -> None:
     """Refuse to add runs under hyperparameters that disagree with completed ones.
 
-    Called by every script that writes cv-kind records, once per arm, BEFORE the
-    run loop. Aborts rather than proceeding: a mismatch is never a new run, it is
-    the same experiment about to be duplicated under different settings.
+    Called by every script that runs ONE locked configuration, once per arm,
+    BEFORE the run loop. Aborts rather than proceeding: a mismatch is never a new
+    run, it is the same experiment about to be duplicated under different
+    settings.
+
+    The comparison is scoped to `scripts` (default: the locked-config scripts)
+    and `protocol` (default: uniform). A record produced by a sweep, or under a
+    different protocol, is not evidence about the current configuration and is
+    never used as such.
     """
-    groups = completed_hyperparameters(arm, split_kind, path)
+    if script in SWEEP_SCRIPTS:
+        raise ValueError(
+            "%s sweeps epochs/batch/lr, so it has no single locked configuration "
+            "to check.\n"
+            "  Use assert_sweep_within_grid instead. See registry.SWEEP_SCRIPTS."
+            % script
+        )
+
+    scripts = LOCKED_CONFIG_SCRIPTS if scripts is None else scripts
+    groups = completed_hyperparameters(
+        arm, split_kind, path, scripts=scripts, protocol=protocol
+    )
     if not groups:
         return
 
@@ -475,51 +543,96 @@ def assert_config_matches_registry(
     if not mismatched:
         return
 
+    sources = sorted(
+        {
+            (record.get("script"), record_protocol(record))
+            for records in mismatched.values()
+            for record in records
+        }
+    )
+    same_source = sources == [(script, protocol)]
+
     lines = [
         "HYPERPARAMETER DRIFT for arm %r -- refusing to run %s." % (arm, script),
         "",
-        "  The registry already holds completed runs of this arm trained under",
-        "  DIFFERENT hyperparameters than configs/arms.yaml currently specifies.",
-        "  epochs, batch and lr feed the run_id hash, so proceeding would not skip",
-        "  those folds -- it would retrain them under the loaded config and leave",
-        "  two regimes in the registry for one arm. aggregate.py would then average",
-        "  across both without noticing.",
+        "  Compared:",
+        "    arm            : %s" % arm,
+        "    split_kind     : %s" % split_kind,
+        "    protocol       : %s" % (protocol if protocol is not None else "(any)"),
+        "    scripts        : %s" % ", ".join(sorted(scripts)),
         "",
         "  %-26s %s" % ("configs/arms.yaml (loaded)", _format_hyperparameters(wanted)),
     ]
     for key, records in sorted(mismatched.items(), key=lambda kv: -len(kv[1])):
-        lines.append(
-            "  %-26s %s   (%d completed run(s))"
-            % ("registry", _format_hyperparameters(key), len(records))
-        )
+        by_source: dict[tuple, int] = {}
+        for record in records:
+            by_source[(record.get("script"), record_protocol(record))] = (
+                by_source.get((record.get("script"), record_protocol(record)), 0) + 1
+            )
+        for (source_script, source_protocol), count in sorted(by_source.items()):
+            lines.append(
+                "  %-26s %s   (%d run(s) from %s, protocol %s)"
+                % (
+                    "registry",
+                    _format_hyperparameters(key),
+                    count,
+                    source_script,
+                    source_protocol,
+                )
+            )
     lines.append("")
-    lines.append("  Affected run_ids:")
+    lines.append("  Conflicting run_ids:")
     for key, records in sorted(mismatched.items(), key=lambda kv: -len(kv[1])):
         for record in records[:20]:
             lines.append(
-                "    %-16s %-24s r%sf%s"
+                "    %-16s %-24s protocol=%-30s r%sf%s"
                 % (
                     record.get("run_id", "?"),
                     record.get("script", "?"),
+                    record_protocol(record),
                     record.get("repeat"),
                     record.get("fold"),
                 )
             )
         if len(records) > 20:
             lines.append("    ... and %d more" % (len(records) - 20))
-    lines += [
-        "",
-        "  Almost always this means a resolved configuration was lost: scripts 01",
-        "  and 02 rewrite configs/arms.yaml, and a session that ended before that",
-        "  file was committed leaves the next clone with the provisional values.",
-        "",
-        "  Recover the resolved config, do not overwrite the runs:",
-        "      python scripts/restore_arms.py",
-        "",
-        "  If instead you deliberately changed the hyperparameters, the completed",
-        "  runs above belong to the old configuration and must be deleted from",
-        "  artifacts/registry.jsonl before this arm is run again.",
-    ]
+
+    if same_source:
+        lines += [
+            "",
+            "  These runs come from THIS script under THIS protocol, so they are",
+            "  directly comparable and one of the two configurations is wrong.",
+            "",
+            "  Usually a resolved configuration was lost: scripts 01b and 02 rewrite",
+            "  configs/arms.yaml, and a session that ended before that file was",
+            "  committed leaves the next clone with the unresolved values.",
+            "",
+            "  Recover the resolved config, do not overwrite the runs:",
+            "      python scripts/restore_arms.py",
+            "",
+            "  Only if you deliberately changed the hyperparameters do the completed",
+            "  runs above belong to the old configuration, in which case they must be",
+            "  deleted from artifacts/registry.jsonl before this arm is run again.",
+        ]
+    else:
+        lines += [
+            "",
+            "  NOTE: the conflicting records were NOT produced by this script under",
+            "  this protocol. They come from:",
+        ]
+        for source_script, source_protocol in sources:
+            lines.append(
+                "      %s   (protocol %s)" % (source_script, source_protocol)
+            )
+        lines += [
+            "",
+            "  Records from a different script or protocol are not evidence about",
+            "  the current configuration, so this is a SCOPING error in the caller,",
+            "  not a drift in your configuration.",
+            "",
+            "  DO NOT delete those records and DO NOT run restore_arms.py.",
+            "  Pass the right `scripts` and `protocol` to this check instead.",
+        ]
     raise HyperparameterDriftError("\n".join(lines))
 
 
@@ -529,9 +642,16 @@ def assert_arms_match_registry(
     arms: list[str],
     arms_cfg: dict[str, Any],
     split_kind: str = "cv",
+    protocol: str | None = UNIFORM_PROTOCOL,
+    scripts: frozenset[str] | set[str] | None = None,
     path: Path | None = None,
 ) -> None:
     """`assert_config_matches_registry` for each arm a script is about to run."""
+    if script in SWEEP_SCRIPTS:
+        raise ValueError(
+            "%s sweeps epochs/batch/lr; use assert_sweep_within_grid instead. "
+            "See registry.SWEEP_SCRIPTS." % script
+        )
     for arm in arms:
         arm_cfg = (arms_cfg.get("arms") or {}).get(arm)
         if not arm_cfg or arm_cfg.get("lr") is None:
@@ -543,11 +663,88 @@ def assert_arms_match_registry(
             batch=int(arm_cfg["batch"]),
             lr=float(arm_cfg["lr"]),
             split_kind=split_kind,
+            protocol=protocol,
+            scripts=scripts,
             path=path,
         )
     print(
-        "[config] %d arm(s) checked against completed runs -- no hyperparameter drift"
-        % len(arms)
+        "[config] %d arm(s) checked against completed runs of %s under protocol %r "
+        "-- no hyperparameter drift"
+        % (len(arms), ", ".join(sorted(scripts or LOCKED_CONFIG_SCRIPTS)), protocol)
+    )
+
+
+def assert_sweep_within_grid(
+    *,
+    script: str,
+    protocol: str,
+    arms: list[str],
+    grid_points: set[tuple],
+    planned: list[tuple],
+    split_kind: str = "dev",
+    path: Path | None = None,
+) -> None:
+    """The sweep scripts' equivalent of the drift guard.
+
+    A sweep has no single locked configuration to agree with, so instead it
+    asserts MEMBERSHIP: every (epochs, batch, lr) it is about to run, and every
+    one it has already run under the same script and protocol, must be a point of
+    the grid declared in configs/arms.yaml.
+
+    That catches the error a sweep can actually suffer -- the grid edited between
+    sessions, so the registry ends up holding points from two different grids --
+    without firing on the sweep itself.
+    """
+    stray_planned = sorted(set(planned) - set(grid_points))
+    if stray_planned:
+        raise HyperparameterDriftError(
+            "%s is about to run %d configuration(s) that are NOT points of the "
+            "grid declared in configs/arms.yaml:\n%s\n"
+            "  declared grid has %d point(s). Either the grid was edited or the "
+            "script is building its plan wrongly."
+            % (
+                script,
+                len(stray_planned),
+                "\n".join("    " + _format_hyperparameters(k) for k in stray_planned),
+                len(grid_points),
+            )
+        )
+
+    stray_done: dict[tuple, list[str]] = {}
+    for arm in arms:
+        groups = completed_hyperparameters(
+            arm, split_kind, path, scripts={script}, protocol=protocol
+        )
+        for key, records in groups.items():
+            if key not in grid_points:
+                stray_done.setdefault(key, []).extend(
+                    r.get("run_id", "?") for r in records
+                )
+    if stray_done:
+        lines = [
+            "GRID CHANGED between sessions -- refusing to run %s." % script,
+            "",
+            "  The registry holds completed runs of this script, under protocol",
+            "  %r, at configurations that are no longer points of the grid in" % protocol,
+            "  configs/arms.yaml. Continuing would mix two different grids.",
+            "",
+        ]
+        for key, run_ids in sorted(stray_done.items()):
+            lines.append("  %s   %d run(s)" % (_format_hyperparameters(key), len(run_ids)))
+            for run_id in run_ids[:10]:
+                lines.append("      %s" % run_id)
+        lines += [
+            "",
+            "  Either restore the grid these runs were made under, or delete them",
+            "  and re-run the sweep. They come from this same script and protocol,",
+            "  so deleting them loses nothing that the new grid will not reproduce.",
+        ]
+        raise HyperparameterDriftError("\n".join(lines))
+
+    print(
+        "[grid] %s: %d planned configuration(s) all within the declared grid "
+        "(%d points); no completed run outside it"
+        % (script, len(planned), len(grid_points))
     )
 
 

@@ -197,6 +197,7 @@ def main() -> int:
                     wall_time_s=wall,
                     determinism_status=result.determinism,
                     extra={
+                        "protocol": "uniform",
                         "ablation": "class_weights_none",
                         "selection_metric": "val_f1_macro",
                     },
