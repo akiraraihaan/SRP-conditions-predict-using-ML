@@ -1,8 +1,8 @@
 # artifacts/resolved_arms.yaml -- GENERATED SNAPSHOT. Do not edit by hand.
 #
-# Written by  : 01_complete_medium_grid
-# At          : 2026-09-02T09:28:45+00:00
-# Git commit  : 900245bf185c24bdf1eaf71f537d131a8671bca1-dirty
+# Written by  : 01b_uniform_grid
+# At          : 2026-09-04T02:43:48+00:00
+# Git commit  : 7f137114e5b1cb3b6210cc53c365c012ddba5ad4-dirty
 #
 # A full snapshot of configs/arms.yaml as it stood after the resolving script
 # wrote its results back. configs/arms.yaml lives in the clone and dies with
@@ -39,11 +39,11 @@ arms:
     backend: ultralytics
     pretrained_fallback: yolo11n-cls.pt
     optimizer: MuSGD
-    epochs: 50
+    epochs: 25
     batch: 16
-    lr: 0.01
+    lr: 0.001
     locked: true
-    lr_source: "grid_search:n_ep50_bs16_lr1e-02 (f1_macro_val=0.8364)"
+    lr_source: "uniform_grid:01b:n_ep25_bs16_lr1e-03 (f1_macro_val=0.6017, 18/18 grid, dev split, UNIFORM protocol: no augmentation, class weights applied, val-macro-F1 selection; written by 01b_uniform_grid.py)"
 
   yolo26s:
     architecture: yolo26s-cls
@@ -54,23 +54,19 @@ arms:
     batch: 8
     lr: 0.01
     locked: true
-    lr_source: "grid_search:s_ep50_bs8_lr1e-02 (f1_macro_val=0.7257)"
+    lr_source: "uniform_grid:01b:s_ep50_bs8_lr1e-02 (f1_macro_val=0.5840, 18/18 grid, dev split, UNIFORM protocol: no augmentation, class weights applied, val-macro-F1 selection; written by 01b_uniform_grid.py)"
 
   yolo26m:
     architecture: yolo26m-cls
     backend: ultralytics
     pretrained_fallback: yolo11m-cls.pt
     optimizer: MuSGD
-    # PROVISIONAL. Argmax over only 10 of 18 grid configurations; the 8 missing
-    # ones are all at 50 epochs (cell 15 of the old notebook is marked "batal"
-    # = cancelled). 01_complete_medium_grid.py runs those 8 and overwrites
-    # epochs/batch/lr here. See MIGRATION_NOTES.md section 5.2.
-    epochs: 25
+    epochs: 50
     batch: 8
-    lr: 0.01
+    lr: 0.001
     locked: true
     provisional: false
-    lr_source: "grid_search:m_ep25_bs8_lr1e-02 (f1_macro_val=0.7657, 18/18 grid, legacy unweighted protocol, written by 01_complete_medium_grid.py)"
+    lr_source: "uniform_grid:01b:m_ep50_bs8_lr1e-03 (f1_macro_val=0.6293, 18/18 grid, dev split, UNIFORM protocol: no augmentation, class weights applied, val-macro-F1 selection; written by 01b_uniform_grid.py)"
 
   mobilenetv3_small:
     architecture: mobilenet_v3_small
