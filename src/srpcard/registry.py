@@ -29,6 +29,7 @@ from .config import (
     RUN_DEFINING_HYPERPARAMETERS,
     artifacts_dir,
     git_commit,
+    hardware,
     library_versions,
 )
 
@@ -89,6 +90,11 @@ REQUIRED_RECORD_FIELDS = (
     "accuracy",
     "confusion_matrix",
     "class_order",
+    # hardware -- top level, so a mixed-hardware check can compare it
+    "gpu",
+    "cuda_version",
+    "driver_version",
+    "device_kind",
     # provenance
     "wall_time_s",
     "determinism_status",
@@ -320,6 +326,7 @@ def build_record(
     - `training` -- the uniform-protocol outcome, from `training_outcome(result)`
       or `training_outcome_absent(reason)`.
     """
+    _hardware = hardware()
     return {
         "run_id": run_id,
         "script": script,
@@ -369,6 +376,15 @@ def build_record(
         "size_mb_checkpoint_file": efficiency.get("size_mb_checkpoint_file"),
         "latency_ms_mean": efficiency.get("latency_ms_mean"),
         "latency_ms_std": efficiency.get("latency_ms_std"),
+        # --- hardware, at the top level so it can be compared across records ---
+        **{
+            "gpu": _hardware["gpu"],
+            "gpu_count": _hardware["gpu_count"],
+            "cuda_version": _hardware["cuda_version"],
+            "driver_version": _hardware["driver_version"],
+            "compute_capability": _hardware["compute_capability"],
+            "device_kind": _hardware["device_kind"],
+        },
         # --- provenance ---
         "wall_time_s": wall_time_s,
         "determinism_status": determinism_status or {},
@@ -672,6 +688,62 @@ def assert_arms_match_registry(
         "-- no hyperparameter drift"
         % (len(arms), ", ".join(sorted(scripts or LOCKED_CONFIG_SCRIPTS)), protocol)
     )
+
+
+def warn_if_mixed_hardware(
+    arms: list[str],
+    *,
+    scripts: frozenset[str] | set[str] | None = None,
+    protocol: str | None = UNIFORM_PROTOCOL,
+    split_kind: str = "cv",
+    path: Path | None = None,
+) -> bool:
+    """Warn when completed runs of one arm span more than one GPU model.
+
+    Not fatal. Folds trained on different hardware are still valid runs, and on
+    free-tier compute a session can legitimately land on a different card. But
+    it belongs in the methods section rather than being discovered afterwards,
+    and a latency or wall-time comparison across such folds is not like-for-like.
+
+    Returns True when every arm is on a single device.
+    """
+    scripts = LOCKED_CONFIG_SCRIPTS if scripts is None else scripts
+    records = [
+        record
+        for record in load_registry(path)
+        if record.get("arm") in arms
+        and record.get("split_kind") == split_kind
+        and record.get("script") in scripts
+        and (protocol is None or record_protocol(record) == protocol)
+    ]
+    if not records:
+        return True
+
+    by_arm: dict[str, dict[str, int]] = {}
+    for record in records:
+        device = record.get("gpu") or record.get("device_kind") or "unknown"
+        by_arm.setdefault(record.get("arm"), {}).setdefault(device, 0)
+        by_arm[record.get("arm")][device] += 1
+
+    mixed = {arm: devices for arm, devices in by_arm.items() if len(devices) > 1}
+    if not mixed:
+        devices = sorted({d for counts in by_arm.values() for d in counts})
+        print("[hardware] %d completed run(s) on %s" % (len(records), ", ".join(devices)))
+        return True
+
+    bar = "!" * 74
+    print("\n" + bar)
+    print("MIXED HARDWARE -- completed runs of one arm span more than one device")
+    for arm, devices in sorted(mixed.items()):
+        print("  %s:" % arm)
+        for device, count in sorted(devices.items(), key=lambda kv: -kv[1]):
+            print("      %-40s %3d run(s)" % (device, count))
+    print("")
+    print("  The runs are valid and the guard is not fatal, but wall-time and")
+    print("  latency are not comparable across them, and it belongs in the")
+    print("  methods section rather than being noticed after submission.")
+    print(bar + "\n")
+    return False
 
 
 def assert_sweep_within_grid(

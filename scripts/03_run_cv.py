@@ -160,6 +160,11 @@ def main() -> int:
         script=SCRIPT, arms=arms, arms_cfg=arms_cfg, split_kind="cv"
     )
 
+    # Not fatal: folds on different cards are valid runs, and free-tier compute
+    # moves. But wall-time and latency stop being comparable across them, and it
+    # belongs in the methods section rather than being found after submission.
+    registry.warn_if_mixed_hardware(arms)
+
     # Once per invocation, before any training. Aborts if the balanced weights
     # do not actually reach the loss; the compact proof goes into every record.
     weights_proof = require_class_weights_verified(

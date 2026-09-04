@@ -121,6 +121,11 @@ def main() -> int:
         script=SCRIPT, arms=[arm], arms_cfg=arms_cfg, split_kind="cv"
     )
 
+    # Not fatal: folds on different cards are valid runs, and free-tier compute
+    # moves. But wall-time and latency stop being comparable across them, and it
+    # belongs in the methods section rather than being found after submission.
+    registry.warn_if_mixed_hardware([arm])
+
     # Run even though THIS script trains unweighted: the ablation only means
     # something if the weighting it removes demonstrably works in the first place.
     weights_proof = require_class_weights_verified(

@@ -239,6 +239,7 @@ rather than live only in a console line or a smoke test:
 | --- | --- |
 | `checkpoint_resolved`, `pretrained_fallback_used` | which pretrained weights actually loaded (§4.2) |
 | `class_weights_verified`, `class_weights_proof` | the measured proof that the balanced weights reach the loss (§4.4) |
+| `gpu`, `cuda_version`, `driver_version`, `device_kind` | the device the run executed on. The GPU name was already inside `library_versions`, but nothing could query it, and a mixed-hardware check must compare one field across records. Scripts 03-05 warn -- not fail -- when one arm's completed runs span more than one GPU |
 | `corpus_fingerprint` | the corpus the run was produced on — verified at load time by every consumer of `folds.json`, now recorded too |
 | `selected_epoch`, `epochs_run`, `stopped_early`, `best_val_f1`, `best_val_loss`, `min_val_loss_epoch`, `history` | the uniform-protocol training outcome, promoted from `extra` to top level so there is one source of truth |
 
@@ -496,6 +497,14 @@ Each arm's locked configuration is the argmax of validation macro-F1 over its ow
 old and new winner side by side per arm, writes `artifacts/uniform_grid.csv`, and
 snapshots the resolved config.
 
+It also writes **`artifacts/uniform_grid_topk.csv`**: the top three
+configurations per arm with `margin_vs_winner` and `images_equivalent`, the
+margin expressed in validation images. yolo26n's winner is ahead of its
+runner-up by 0.0104, which on a 69-image partition is **0.7 images**. The
+selection rule stays argmax -- changing it after seeing the results would be
+post-hoc -- and the margin is reported instead. MIGRATION_NOTES §16.7 records
+that and what else the uniform grid overturned.
+
 **Script 01 and its nine records are retained unchanged.** They are the
 reproduction of the thesis grid and the evidence for both the augmentation and
 class-weight findings. Both grids get reported. The records are separable three
@@ -659,7 +668,7 @@ pip install pytest
 python -m pytest
 ```
 
-106 tests, ~17 s, no GPU and no dataset needed. They cover the registry schema
+107 tests, ~14 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

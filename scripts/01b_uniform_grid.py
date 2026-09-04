@@ -102,6 +102,13 @@ VARIANT = {"yolo26n": "n", "yolo26s": "s", "yolo26m": "m"}
 SECONDS_PER_EPOCH_PER_GFLOP = 0.5744
 SECONDS_PER_EPOCH_FLOOR = 1.5
 SECONDS_FIXED_PER_RUN = 35.0
+# How many configurations per arm go into uniform_grid_topk.csv. The margin
+# between the winner and the runner-up is small enough to be worth reporting
+# (0.0104 on yolo26n is about one image on a 69-image validation slice), so the
+# selection stays argmax and the spread is recorded rather than acted on.
+TOP_K = 3
+# Set from artifacts/dev_split.json at run time; the default is the known 69.
+DEV_VAL_N = 69
 GFLOPS = {"yolo26n": 0.3983, "yolo26s": 1.4864, "yolo26m": 4.8512}
 
 
@@ -116,6 +123,80 @@ def config_key(arm: str, epochs: int, batch: int, lr: float) -> str:
 def project_seconds(arm: str, epochs: int) -> float:
     per_epoch = max(SECONDS_PER_EPOCH_FLOOR, SECONDS_PER_EPOCH_PER_GFLOP * GFLOPS[arm])
     return SECONDS_FIXED_PER_RUN + per_epoch * epochs
+
+
+# --------------------------------------------------------------------------
+# the selection margin
+# --------------------------------------------------------------------------
+
+
+def write_topk(table, artifacts: Path, k: int = TOP_K) -> Path:
+    """Record the top-k configurations per arm and how close they are.
+
+    The locked configuration is the argmax of validation macro-F1, and it stays
+    the argmax: changing the selection rule after seeing the results would be
+    post-hoc. But on a 69-image validation partition a margin of 0.0104 is about
+    ONE image, and a reader is entitled to know that. So the margin is recorded
+    as an artefact rather than recomputed by hand for the manuscript.
+
+    `margin_vs_winner` is negative for the runner-up and below;
+    `images_equivalent` converts a margin into the number of validation images it
+    corresponds to, which is the unit that makes it interpretable.
+    """
+    rows = []
+    for arm, group in table.groupby("arm"):
+        ranked = group.sort_values("f1_macro_val", ascending=False).head(k)
+        best = float(ranked["f1_macro_val"].iloc[0])
+        for rank, record in enumerate(ranked.to_dict("records"), 1):
+            margin = float(record["f1_macro_val"]) - best
+            rows.append(
+                {
+                    "arm": arm,
+                    "rank": rank,
+                    "key": record["key"],
+                    "epochs": record["epochs"],
+                    "batch": record["batch"],
+                    "lr": record["lr"],
+                    "f1_macro_val": record["f1_macro_val"],
+                    "f1_macro_dev_test": record["f1_macro_dev_test"],
+                    "margin_vs_winner": round(margin, 6),
+                    "images_equivalent": round(abs(margin) * DEV_VAL_N, 2),
+                    "selected": rank == 1,
+                }
+            )
+    frame = pd.DataFrame(rows)
+    target = artifacts / "uniform_grid_topk.csv"
+    frame.to_csv(target, index=False, lineterminator="\n")
+    return target
+
+
+def print_topk(table, k: int = TOP_K) -> None:
+    print(
+        "\n  %-10s %-4s %-22s %14s %10s %10s"
+        % ("arm", "rank", "key", "f1_macro_val", "margin", "~images")
+    )
+    for arm, group in table.groupby("arm"):
+        ranked = group.sort_values("f1_macro_val", ascending=False).head(k)
+        best = float(ranked["f1_macro_val"].iloc[0])
+        for rank, record in enumerate(ranked.to_dict("records"), 1):
+            margin = float(record["f1_macro_val"]) - best
+            print(
+                "  %-10s %-4d %-22s %14.4f %10s %10s"
+                % (
+                    arm if rank == 1 else "",
+                    rank,
+                    record["key"],
+                    record["f1_macro_val"],
+                    "--" if rank == 1 else "%+.4f" % margin,
+                    "--" if rank == 1 else "%.1f" % (abs(margin) * DEV_VAL_N),
+                )
+            )
+    print(
+        "\n  The locked configuration is the argmax and stays the argmax. '~images' is\n"
+        "  the margin expressed in validation images (%d in the dev split), which is\n"
+        "  the unit that says whether a margin is a result or a rounding difference."
+        % DEV_VAL_N
+    )
 
 
 # --------------------------------------------------------------------------
@@ -249,6 +330,8 @@ def main() -> int:
           % (corpus_fp["kind"], corpus_fp["n"], corpus_fp["sha1_of_sorted_included_sha1s"]))
 
     dev_split = load_dev_split()
+    global DEV_VAL_N
+    DEV_VAL_N = len(dev_split["val"])
     print("[dev split] train %d  val %d  test %d"
           % (len(dev_split["train"]), len(dev_split["val"]), len(dev_split["test"])))
 
@@ -434,11 +517,13 @@ def main() -> int:
         return 1
 
     table = pd.DataFrame(rows).drop_duplicates("key")
+    table = table.sort_values(["arm", "f1_macro_val"], ascending=[True, False])
     out_csv = artifacts_dir(data_cfg) / "uniform_grid.csv"
-    table.sort_values(["arm", "f1_macro_val"], ascending=[True, False]).to_csv(
-        out_csv, index=False, lineterminator="\n"
-    )
+    table.to_csv(out_csv, index=False, lineterminator="\n")
     print("[artifacts] wrote %s  (%d rows)" % (out_csv, len(table)))
+
+    top_csv = write_topk(table, artifacts_dir(data_cfg))
+    print("[artifacts] wrote %s  (top %d per arm)" % (top_csv, TOP_K))
 
     expected = len(epochs_values) * len(batch_values) * len(lr_values)
     print("\n  %-10s %-22s %7s %6s %9s %14s" % ("arm", "key", "epochs", "batch", "lr", "f1_macro_val"))
@@ -451,6 +536,8 @@ def main() -> int:
               % (arm, winner["key"], winner["epochs"], winner["batch"], winner["lr"],
                  winner["f1_macro_val"],
                  "" if len(subset) == expected else "   (%d/%d only)" % (len(subset), expected)))
+
+    print_topk(table)
 
     # side by side with what arms.yaml carried before
     print("\n  old (legacy grid, augmented) vs new (uniform grid):")

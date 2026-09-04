@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""backfill_efficiency -- fill null efficiency fields in existing registry records.
+"""backfill_efficiency -- fill DERIVABLE fields in existing registry records.
 
     python scripts/backfill_efficiency.py --dry-run   # report, change nothing
     python scripts/backfill_efficiency.py             # write, after a .bak copy
@@ -13,6 +13,11 @@ Two rounds of this have been needed:
 
   params / gflops   script 01's first eight records were written before it
                     profiled the trained module.
+  hardware          gpu / cuda_version / driver_version / device_kind were
+                    promoted to the top level so a mixed-hardware check can
+                    compare them across records. The values were already in
+                    `library_versions`, just not queryable, so existing records
+                    are recovered from there rather than being re-run.
   size_mb_*         `size_mb` used to mean the ultralytics checkpoint file size
                     in script 01 and an fp32 state_dict everywhere else -- two
                     different quantities under one name, differing by ~2x. The
@@ -65,6 +70,29 @@ PRIMARY_SIZE_FIELD = "size_mb_fp16"
 # size there. Move it to its own name and let size_mb become the fp32 figure.
 LEGACY_SIZE_SCRIPTS = ("01_complete_medium_grid",)
 
+# Promoted out of library_versions, where they were recorded but unqueryable.
+HARDWARE_FIELDS = ("gpu", "gpu_count", "cuda_version", "driver_version",
+                   "compute_capability", "device_kind")
+
+
+def hardware_from_library_versions(record: dict) -> dict:
+    """Recover the top-level hardware block from the record's own provenance.
+
+    Lossless: `library_versions` already held the GPU name and CUDA version.
+    Fields it never carried (driver, compute capability) stay None -- they were
+    not recorded at the time and inventing them would be worse than a null.
+    """
+    versions = record.get("library_versions") or {}
+    available = str(versions.get("cuda_available", "")).lower() == "true"
+    return {
+        "gpu": versions.get("gpu"),
+        "gpu_count": 1 if versions.get("gpu") else 0,
+        "cuda_version": None if versions.get("torch_cuda") in (None, "None") else versions.get("torch_cuda"),
+        "driver_version": None,
+        "compute_capability": None,
+        "device_kind": "cuda" if available else "cpu",
+    }
+
 
 def rule(title: str) -> None:
     print("\n" + "=" * 74 + "\n" + title + "\n" + "=" * 74)
@@ -88,6 +116,9 @@ def needs_work(record: dict, *, refresh: bool = False) -> bool:
     if refresh:
         return True
     if any(record.get(field) is None for field in DERIVED_FIELDS):
+        return True
+    # hardware promoted out of library_versions
+    if "device_kind" not in record:
         return True
     # a pre-disambiguation record: size_mb still holds the checkpoint file size
     return (
@@ -144,6 +175,12 @@ def main() -> int:
             continue
 
         changed = []
+        if "device_kind" not in record:
+            recovered = hardware_from_library_versions(record)
+            for field in HARDWARE_FIELDS:
+                record[field] = recovered[field]
+            changed.append("hardware<-library_versions(%s)" % (recovered["gpu"] or "cpu"))
+
         # Move the old checkpoint-file size out of size_mb before size_mb is
         # redefined, so the published figure is preserved rather than replaced.
         if (
@@ -161,9 +198,16 @@ def main() -> int:
                 changed.append("%s %s->%s" % (field, record[field], stats[field]))
                 record[field] = stats[field]
 
-        if record.get("size_mb") != stats[PRIMARY_SIZE_FIELD]:
-            record["size_mb"] = stats[PRIMARY_SIZE_FIELD]
-            changed.append("size_mb->fp16")
+        # The alias comes from THIS RECORD's own fp16 measurement, never from a
+        # fresh local one. Container overhead differs between torch versions, so
+        # recomputing here overwrites what the run actually measured with what
+        # this machine measures -- and leaves size_mb != size_mb_fp16 inside one
+        # record. Only a record that has no fp16 figure at all falls back to the
+        # derived value computed above.
+        alias = record.get(PRIMARY_SIZE_FIELD) or stats[PRIMARY_SIZE_FIELD]
+        if record.get("size_mb") != alias:
+            changed.append("size_mb %s->%s" % (record.get("size_mb"), alias))
+            record["size_mb"] = alias
 
         if changed:
             filled += 1

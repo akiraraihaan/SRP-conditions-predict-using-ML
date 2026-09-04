@@ -1012,6 +1012,7 @@ by `extra.protocol` (`legacy_unweighted_ultralytics` against `uniform`).
 | 13.1 | a 10-class confusion matrix | 14 directories, four classes duplicated under a numeric prefix, every metric deflated |
 | **16** | **no augmentation: it distorts curve morphology** | **RandAugment, erasing, fliplr 0.5, HSV jitter, scale, translate — all on** |
 | **16.6** | **HANDOVER §4.7: "commit these", listing the figures and summary tables by name** | **17 of those paths had no `.gitignore` exception, so `git add` refused them SILENTLY** |
+| **16.7** | **lr 1e-4 fails to converge (Bengio's learning-rate argument)** | **it converges fine without augmentation: 0.40–0.48 mean val F1, and yolo26n's second-best configuration overall** |
 
 Each was invisible in the saved outputs. Each surfaced only when something was
 re-run or re-checked, never from reading the code or the results: §5.4 by
@@ -1066,3 +1067,93 @@ clears its whole output set before regenerating and stamps provenance (record
 count, arms, corpus fingerprint, registry sha1, timestamp) into every table and
 figure it writes, so a stale artefact announces itself instead of waiting to be
 noticed.
+
+### 16.7 What the uniform grid overturned
+
+The 54-run uniform grid (`scripts/01b_uniform_grid.py`, `artifacts/uniform_grid.csv`)
+is not only a replacement selection. It is **evidence about the augmentation
+defect**, because it re-searches the same space on the same split with the
+augmentation removed, and three of the thesis's readings of the original grid do
+not survive.
+
+#### 1. lr = 1e-4 does not fail to converge
+
+Mean validation macro-F1 at lr 1e-4, legacy against uniform:
+
+| arm | legacy (augmented) | uniform (no augmentation) |
+| --- | ---: | ---: |
+| yolo26n | 0.2737 | **0.4817** |
+| yolo26s | 0.2161 | **0.4002** |
+| yolo26m | 0.0893 | **0.4692** |
+
+The legacy medium runs at 1e-4 scored 0.0487–0.1108 — at or below the 0.100
+expected of chance on ten classes, which reads as a model that never left its
+initialisation. Under the uniform protocol the same configurations reach
+0.40–0.48.
+
+More pointedly, **`n_ep50_bs8_lr1e-04` is yolo26n's second-best configuration
+overall** at 0.5912, 0.0104 behind the winner — about 0.7 images on the 69-image
+validation partition.
+
+**The thesis attributes the 1e-4 collapse to Bengio's learning-rate argument —
+that a rate an order of magnitude below the optimum leaves the model unable to
+escape its initial region within the epoch budget. That attribution is wrong.**
+The collapse was not a property of the learning rate. It was RandAugment, random
+erasing, flipping and HSV jitter injecting more variation than a 1e-4 step could
+track in 25–50 epochs on 556 images. Remove the augmentation and the same rate
+trains perfectly well. Any passage resting on that explanation has to go.
+
+#### 2. lr = 1e-2 is no longer the best rate
+
+| arm | legacy winner | uniform winner |
+| --- | --- | --- |
+| yolo26n | lr 1e-2 | **lr 1e-3** (`n_ep25_bs16_lr1e-03`, 0.6017) |
+| yolo26s | lr 1e-2 | lr 1e-2 (`s_ep50_bs8_lr1e-02`, 0.5840) |
+| yolo26m | lr 1e-2 | **lr 1e-3** (`m_ep50_bs8_lr1e-03`, 0.6293) |
+
+By mean over each arm's six configurations, 1e-3 beats 1e-2 for yolo26n (0.5782
+against 0.5336); for yolo26m the two means are within 0.0021 (0.5759 against
+0.5780) while the single best configuration is at 1e-3. Only yolo26s still
+prefers 1e-2 on both readings.
+
+The direction is consistent with the mechanism above: heavy augmentation rewards
+a larger step, and removing it moves the optimum down.
+
+#### 3. 50 epochs beats 25, for all three arms
+
+| arm | 25 epochs | 50 epochs |
+| --- | ---: | ---: |
+| yolo26n | 0.5187 | **0.5437** |
+| yolo26s | 0.4669 | **0.5046** |
+| yolo26m | 0.5265 | **0.5556** |
+
+Consistent and in the same direction everywhere, though two of the three arms
+still select a 50-epoch winner while yolo26n's best single configuration is at 25.
+The epoch-budget question this was meant to settle is answered on the uniform
+grid, not the legacy one — §6 of HANDOVER.md explains why the legacy table could
+not answer it.
+
+#### The absolute values are lower, and that is expected
+
+Uniform winners are 0.58–0.63 against 0.72–0.75 in the legacy grid. Those numbers
+are **not comparable** and neither is better: the legacy figures come from an
+augmented, unweighted protocol on contaminated labels, and augmentation on a
+small dataset inflates a validation score measured on the same augmented
+distribution. What matters is that the uniform grid selects under the protocol
+the paper actually describes.
+
+#### The selection margin is recorded, not acted on
+
+`artifacts/uniform_grid_topk.csv` holds the top three configurations per arm with
+`margin_vs_winner` and `images_equivalent` — the margin expressed in validation
+images, the unit that says whether it is a result or a rounding difference:
+
+| arm | winner | runner-up margin | ≈ images |
+| --- | --- | ---: | ---: |
+| yolo26n | `n_ep25_bs16_lr1e-03` | −0.0104 | **0.7** |
+| yolo26m | `m_ep50_bs8_lr1e-03` | −0.0200 | 1.4 |
+| yolo26s | `s_ep50_bs8_lr1e-02` | −0.0357 | 2.5 |
+
+yolo26n's winner is ahead by less than one image. The selection rule stays argmax
+— changing it after seeing the results would be post-hoc — and the margin is
+reported instead.

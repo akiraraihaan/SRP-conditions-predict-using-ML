@@ -33,6 +33,7 @@ COMMITTED = [
     ("artifacts/resolved_arms.yaml", "01/01b/02", "resolved hyperparameters; recovery path"),
     ("artifacts/medium_grid_complete.csv", "01", "the 18-config legacy grid table"),
     ("artifacts/uniform_grid.csv", "01b", "the 54-run uniform grid; selects the locked configs"),
+    ("artifacts/uniform_grid_topk.csv", "01b", "the selection margin, reported in the manuscript"),
     ("artifacts/baseline_lr_sweep.csv", "02", "the 6-run baseline sweep"),
     ("artifacts/ablation_paired.csv", "04", "manuscript table"),
     ("artifacts/ablation_per_class.csv", "04", "manuscript table"),

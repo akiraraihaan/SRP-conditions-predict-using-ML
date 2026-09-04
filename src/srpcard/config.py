@@ -383,6 +383,63 @@ def git_commit() -> str:
     return commit
 
 
+def hardware() -> dict[str, Any]:
+    """The device a run actually executed on.
+
+    Recorded at the TOP LEVEL of every registry record, not nested inside
+    `library_versions`. The GPU name was already captured there, but nothing
+    could query it: a mixed-hardware check has to compare one field across
+    records, and `library_versions` is a free-form blob.
+
+    Never raises. Every field falls back to None so a CPU run, or a machine
+    without nvidia-smi, records what it can rather than failing.
+    """
+    info: dict[str, Any] = {
+        "gpu": None,
+        "gpu_count": 0,
+        "cuda_version": None,
+        "driver_version": None,
+        "compute_capability": None,
+        "device_kind": "cpu",
+    }
+    try:
+        import torch
+    except ImportError:
+        return info
+
+    info["cuda_version"] = torch.version.cuda
+    if not torch.cuda.is_available():
+        return info
+
+    info["device_kind"] = "cuda"
+    try:
+        info["gpu"] = torch.cuda.get_device_name(0)
+        info["gpu_count"] = torch.cuda.device_count()
+        major, minor = torch.cuda.get_device_capability(0)
+        info["compute_capability"] = "%d.%d" % (major, minor)
+    except Exception:  # noqa: BLE001 - provenance never blocks a run
+        pass
+
+    # The driver is not exposed by the public torch API in every version, so
+    # try the private accessor first and fall back to nvidia-smi.
+    try:
+        raw = torch._C._cuda_getDriverVersion()  # noqa: SLF001
+        info["driver_version"] = "%d.%d" % (raw // 1000, (raw % 1000) // 10)
+    except Exception:  # noqa: BLE001
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                info["driver_version"] = out.stdout.strip().splitlines()[0].strip()
+        except Exception:  # noqa: BLE001
+            pass
+    return info
+
+
 def library_versions() -> dict[str, str]:
     """Versions ACTUALLY installed at runtime, not the pins in requirements.txt."""
     versions: dict[str, str] = {

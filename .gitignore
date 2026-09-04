@@ -75,6 +75,8 @@ artifacts/*
 !artifacts/medium_grid_complete.csv
 # 01b, uniform protocol
 !artifacts/uniform_grid.csv
+# 01b, the top-3 per arm and the selection margin in validation images
+!artifacts/uniform_grid_topk.csv
 # 02
 !artifacts/baseline_lr_sweep.csv
 
