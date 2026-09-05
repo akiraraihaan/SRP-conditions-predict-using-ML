@@ -63,9 +63,9 @@ arms:
     # TBD. Not recoverable from the old work -- this architecture was never
     # trained there. 02_lr_sweep_baselines.py determines it. The config loader
     # refuses to run any arm whose lr is still null.
-    lr: null
-    locked: false
-    lr_source: "TBD:02_lr_sweep"
+    lr: 0.01
+    locked: true
+    lr_source: "lr_sweep:02 (f1_macro_val=0.6860, dev split, uniform protocol)"
 
   resnet18:
     architecture: resnet18
@@ -73,9 +73,9 @@ arms:
     optimizer: SGD
     epochs: 50
     batch: 16
-    lr: null
-    locked: false
-    lr_source: "TBD:02_lr_sweep"
+    lr: 0.0001
+    locked: true
+    lr_source: "lr_sweep:02 (f1_macro_val=0.6935, dev split, uniform protocol)"
 
 # --- The uniform training protocol (scripts 02-05) ----------------------
 # One implementation for all five arms. Script 01 does NOT use it: that script
