@@ -309,6 +309,26 @@ def main() -> int:
     print("            recover it in a fresh clone with: python scripts/restore_arms.py")
 
     print("\n[artifacts] wrote %s" % out_csv)
+
+    # The selection margins. resnet18 picked lr 1e-4 over 1e-3 by 0.0006 where one
+    # validation image is 1/69 = 0.0145 -- about four percent of one image -- and in
+    # BOTH baselines the configuration with the best dev-test result lost. Selection
+    # stays argmax; the margin is recorded rather than argued about later.
+    from srpcard import aggregate
+
+    margins = aggregate.selection_margins(
+        table, val_n=len(dev_split["val"]), k=len(sweep["lr"])
+    )
+    margins_csv = artifacts_dir(data_cfg) / "baseline_lr_sweep_topk.csv"
+    margins.to_csv(margins_csv, index=False, lineterminator="\n")
+    aggregate.print_selection_margins(margins, val_n=len(dev_split["val"]), label="lr")
+    diverged = margins[(margins["rank"] == 1) & (margins["f1_macro_dev_test_rank"] > 1)]
+    for row in diverged.to_dict("records"):
+        print(
+            "  NOTE %s: the selected lr ranks %d of %d on the dev-test partition."
+            % (row["arm"], row["f1_macro_dev_test_rank"], len(sweep["lr"]))
+        )
+    print("[artifacts] wrote %s" % margins_csv)
     return 0
 
 

@@ -1,16 +1,3 @@
-# artifacts/resolved_arms.yaml -- GENERATED SNAPSHOT. Do not edit by hand.
-#
-# Written by  : 01b_uniform_grid
-# At          : 2026-09-04T02:43:48+00:00
-# Git commit  : 7f137114e5b1cb3b6210cc53c365c012ddba5ad4-dirty
-#
-# A full snapshot of configs/arms.yaml as it stood after the resolving script
-# wrote its results back. configs/arms.yaml lives in the clone and dies with
-# the session; artifacts/ is the Drive symlink, so this copy survives.
-#
-# Restore it over configs/arms.yaml in a fresh clone with:
-#     python scripts/restore_arms.py
-#
 # ==== BEGIN VERBATIM COPY OF configs/arms.yaml ====
 # Experiment arms.
 #
@@ -77,9 +64,9 @@ arms:
     # TBD. Not recoverable from the old work -- this architecture was never
     # trained there. 02_lr_sweep_baselines.py determines it. The config loader
     # refuses to run any arm whose lr is still null.
-    lr: null
-    locked: false
-    lr_source: "TBD:02_lr_sweep"
+    lr: 0.01
+    locked: true
+    lr_source: "lr_sweep:02 (f1_macro_val=0.6860, dev split, uniform protocol)"
 
   resnet18:
     architecture: resnet18
@@ -87,9 +74,9 @@ arms:
     optimizer: SGD
     epochs: 50
     batch: 16
-    lr: null
-    locked: false
-    lr_source: "TBD:02_lr_sweep"
+    lr: 0.0001
+    locked: true
+    lr_source: "lr_sweep:02 (f1_macro_val=0.6935, dev split, uniform protocol)"
 
 # --- The uniform training protocol (scripts 02-05) ----------------------
 # One implementation for all five arms. Script 01 does NOT use it: that script

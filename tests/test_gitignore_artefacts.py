@@ -35,6 +35,7 @@ COMMITTED = [
     ("artifacts/uniform_grid.csv", "01b", "the 54-run uniform grid; selects the locked configs"),
     ("artifacts/uniform_grid_topk.csv", "01b", "the selection margin, reported in the manuscript"),
     ("artifacts/baseline_lr_sweep.csv", "02", "the 6-run baseline sweep"),
+    ("artifacts/baseline_lr_sweep_topk.csv", "02", "the lr selection margin, at noise level"),
     ("artifacts/ablation_paired.csv", "04", "manuscript table"),
     ("artifacts/ablation_per_class.csv", "04", "manuscript table"),
     ("artifacts/learning_curve.csv", "05", "manuscript table"),

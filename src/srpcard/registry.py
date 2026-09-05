@@ -820,6 +820,206 @@ def assert_sweep_within_grid(
     )
 
 
+# --------------------------------------------------------------------------
+# merging two diverged registries
+# --------------------------------------------------------------------------
+#
+# The registry can legitimately exist in two places at once: committed in the
+# repository, and live in whatever durable storage a session writes to. They
+# diverge as soon as one is edited without the other -- a backfill committed to
+# the repository while a session appends new runs elsewhere -- and overwriting
+# either direction loses work.
+#
+# Merging is safe because a record is IMMUTABLE once written: run_id is a hash of
+# the parameters that define the run, so two records sharing an id describe the
+# same run and can only differ by how complete they are. If they disagree on a
+# MEASURED value that assumption is false -- they are different runs wearing one
+# id -- and the merge refuses rather than silently choosing.
+
+# Outcomes. Two records sharing a run_id must agree on every one of these.
+MEASURED_FIELDS = (
+    "f1_macro",
+    "accuracy",
+    "precision_macro",
+    "recall_macro",
+    "f1_per_class",
+    "recall_per_class",
+    "precision_per_class",
+    "support_per_class",
+    "confusion_matrix",
+    "n_test_images",
+    "wall_time_s",
+)
+
+
+class RegistryConflictError(RuntimeError):
+    """Two records share a run_id but disagree on a measured value."""
+
+
+def _populated(record: dict[str, Any]) -> int:
+    """How many required schema fields carry a value."""
+    return sum(1 for field in REQUIRED_RECORD_FIELDS if record.get(field) is not None)
+
+
+def compare_records(left: dict[str, Any], right: dict[str, Any]) -> list[dict[str, Any]]:
+    """Measured values on which two records with one run_id disagree.
+
+    A field present in one and absent (or None) in the other is NOT a
+    disagreement -- that is exactly what merging fills in. Only two different
+    values conflict.
+    """
+    conflicts = []
+    for field in MEASURED_FIELDS:
+        a, b = left.get(field), right.get(field)
+        if a is None or b is None:
+            continue
+        if a != b:
+            conflicts.append({"field": field, "left": a, "right": b})
+    return conflicts
+
+
+def merge_records(
+    left: dict[str, Any], right: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """One record from two, plus the names of the fields the merge filled.
+
+    The more populated record is the base; the other only fills fields the base
+    is missing or has as None. Nothing is overwritten.
+    """
+    base, other = (left, right) if _populated(left) >= _populated(right) else (right, left)
+    merged = dict(base)
+    filled = []
+    for field, value in other.items():
+        if value is None:
+            continue
+        if merged.get(field) is None:
+            merged[field] = value
+            filled.append(field)
+    return merged, sorted(filled)
+
+
+def merge_registries(
+    records_a: list[dict[str, Any]],
+    records_b: list[dict[str, Any]],
+    *,
+    label_a: str = "A",
+    label_b: str = "B",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Merge two registries by run_id.
+
+    Raises RegistryConflictError, naming every disagreement, if any run_id
+    appears in both with differing measured values. Nothing is written and no
+    partial result is returned: a conflict means the inputs are not what the
+    caller believes they are.
+
+    Order is stable: A's records in their original order, then B's new ones.
+    """
+    by_id_a = {r.get("run_id"): r for r in records_a if r.get("run_id")}
+    by_id_b = {r.get("run_id"): r for r in records_b if r.get("run_id")}
+    shared = [rid for rid in by_id_a if rid in by_id_b]
+
+    conflicts = []
+    for run_id in shared:
+        found = compare_records(by_id_a[run_id], by_id_b[run_id])
+        if found:
+            conflicts.append({"run_id": run_id, "fields": found})
+    if conflicts:
+        lines = [
+            "REGISTRY CONFLICT -- refusing to merge.",
+            "",
+            "  %d run_id(s) appear in both inputs but disagree on a MEASURED value."
+            % len(conflicts),
+            "  A run_id is a hash of the parameters that define a run, so two records",
+            "  sharing one describe the same run and can differ only in completeness.",
+            "  A disagreement here means they are DIFFERENT RUNS wearing one id, and",
+            "  merging would silently discard one of them.",
+            "",
+        ]
+        for conflict in conflicts[:10]:
+            record = by_id_a[conflict["run_id"]]
+            lines.append(
+                "  %s  (%s, %s, r%sf%s)"
+                % (
+                    conflict["run_id"],
+                    record.get("script"),
+                    record.get("arm"),
+                    record.get("repeat"),
+                    record.get("fold"),
+                )
+            )
+            for field in conflict["fields"][:6]:
+                left = repr(field["left"])
+                right = repr(field["right"])
+                lines.append(
+                    "      %-18s %s: %s" % (field["field"], label_a, left[:60])
+                )
+                lines.append("      %-18s %s: %s" % ("", label_b, right[:60]))
+        if len(conflicts) > 10:
+            lines.append("  ... and %d more" % (len(conflicts) - 10))
+        lines += [
+            "",
+            "  Nothing has been written. Work out which input is right before",
+            "  merging: check git history for the committed copy, and the session",
+            "  logs for the other.",
+        ]
+        raise RegistryConflictError("\n".join(lines))
+
+    merged: list[dict[str, Any]] = []
+    reconciled = []
+    for run_id, record in by_id_a.items():
+        if run_id in by_id_b:
+            combined, filled = merge_records(record, by_id_b[run_id])
+            merged.append(combined)
+            if filled:
+                reconciled.append({"run_id": run_id, "filled": filled})
+        else:
+            merged.append(record)
+    only_b = [rid for rid in by_id_b if rid not in by_id_a]
+    merged.extend(by_id_b[rid] for rid in only_b)
+
+    report = {
+        "n_a": len(by_id_a),
+        "n_b": len(by_id_b),
+        "n_merged": len(merged),
+        "only_a": [rid for rid in by_id_a if rid not in by_id_b],
+        "only_b": only_b,
+        "shared": shared,
+        "reconciled": reconciled,
+        "label_a": label_a,
+        "label_b": label_b,
+    }
+    return merged, report
+
+
+def print_merge_report(report: dict[str, Any]) -> None:
+    a, b = report["label_a"], report["label_b"]
+    print("  %-34s %d record(s)" % ("%s holds" % a, report["n_a"]))
+    print("  %-34s %d record(s)" % ("%s holds" % b, report["n_b"]))
+    print("  %-34s %d" % ("only in %s" % a, len(report["only_a"])))
+    print("  %-34s %d" % ("only in %s" % b, len(report["only_b"])))
+    print("  %-34s %d" % ("in both", len(report["shared"])))
+    print("  %-34s %d" % ("of those, reconciled", len(report["reconciled"])))
+    print("  %-34s %d record(s)" % ("MERGED TOTAL", report["n_merged"]))
+    if report["reconciled"]:
+        filled_counts: dict[str, int] = {}
+        for entry in report["reconciled"]:
+            for field in entry["filled"]:
+                filled_counts[field] = filled_counts.get(field, 0) + 1
+        print("\n  fields filled by reconciliation:")
+        for field, count in sorted(filled_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            print("      %-28s %3d record(s)" % (field, count))
+
+
+def write_registry(records: list[dict[str, Any]], path: Path) -> Path:
+    """Write a whole registry. Used by the merge tools, never by a run."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        for record in records:
+            fh.write(json.dumps(record, sort_keys=False, default=str) + "\n")
+    return path
+
+
 def summarise(path: Path | None = None) -> dict[str, Any]:
     """Counts by script, arm and split_kind. For the end-of-run summary."""
     records = load_registry(path)

@@ -79,6 +79,8 @@ artifacts/*
 !artifacts/uniform_grid_topk.csv
 # 02
 !artifacts/baseline_lr_sweep.csv
+# 02, the lr selection margin -- resnet18 won by 0.04 of one validation image
+!artifacts/baseline_lr_sweep_topk.csv
 
 # manuscript tables
 # 06

@@ -113,3 +113,51 @@ def test_drive_is_created_when_absent(cell_source, tmp_path, drive):
     run_cell(cell_source, make_clone(tmp_path), drive)
     assert drive.is_dir()
     assert (drive / "registry.jsonl").exists()
+
+
+def test_clone_only_records_are_merged_into_drive(cell_source, tmp_path, drive):
+    """The divergence that actually happened: the repository held a backfill that
+    never reached Drive, while Drive held runs that were never committed.
+    Seeding one-directionally loses one side; merging keeps both."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from srpcard import registry
+
+    work = make_clone(tmp_path)
+    # Drive: two runs the repository has never seen
+    drive.mkdir(parents=True)
+    (drive / "registry.jsonl").write_text(
+        "".join(json.dumps({"run_id": "drive%d" % i, "script": "03_run_cv",
+                            "arm": "yolo26n", "f1_macro": 0.5}) + "\n" for i in range(2)),
+        encoding="utf-8",
+    )
+    # the clone: a committed record Drive lacks
+    (work / "artifacts" / "registry.jsonl").write_text(
+        json.dumps({"run_id": "committed0", "script": "01b_uniform_grid",
+                    "arm": "yolo26m", "f1_macro": 0.6, "gpu": "Tesla T4"}) + "\n",
+        encoding="utf-8",
+    )
+
+    run_cell(cell_source, work, drive)
+
+    ids = {r["run_id"] for r in registry.load_registry(work / "artifacts" / "registry.jsonl")}
+    assert ids == {"drive0", "drive1", "committed0"}, (
+        "the merge lost records: %s" % sorted(ids)
+    )
+
+
+def test_a_conflicting_registry_stops_the_session(cell_source, tmp_path, drive):
+    """Two records sharing a run_id but disagreeing on a measured value must
+    abort rather than silently discard one."""
+    work = make_clone(tmp_path)
+    drive.mkdir(parents=True)
+    (drive / "registry.jsonl").write_text(
+        json.dumps({"run_id": "same", "script": "03_run_cv", "arm": "yolo26n",
+                    "f1_macro": 0.50}) + "\n", encoding="utf-8")
+    (work / "artifacts" / "registry.jsonl").write_text(
+        json.dumps({"run_id": "same", "script": "03_run_cv", "arm": "yolo26n",
+                    "f1_macro": 0.87}) + "\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        run_cell(cell_source, work, drive)

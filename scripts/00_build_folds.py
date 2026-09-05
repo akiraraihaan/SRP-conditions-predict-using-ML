@@ -303,6 +303,133 @@ def describe_lr_source(lr_source) -> str:
     return text[:58]
 
 
+# Which sweep artefact records the winner for each arm. Checking arms.yaml
+# against these catches a half-restored config before script 03 spends hours on
+# it -- restore_arms.py rewrites the whole file, but a hand edit or a partial
+# unzip can leave one arm behind.
+SWEEP_SOURCES = {
+    "yolo26n": ("uniform_grid.csv", "01b_uniform_grid.py"),
+    "yolo26s": ("uniform_grid.csv", "01b_uniform_grid.py"),
+    "yolo26m": ("uniform_grid.csv", "01b_uniform_grid.py"),
+    "mobilenetv3_small": ("baseline_lr_sweep.csv", "02_lr_sweep_baselines.py"),
+    "resnet18": ("baseline_lr_sweep.csv", "02_lr_sweep_baselines.py"),
+}
+
+
+def _recorded_winner(arm: str, artifacts, filename: str):
+    """The argmax row for one arm in a sweep artefact, or None.
+
+    Returns (epochs, batch, lr) where the artefact records them. The baseline
+    sweep fixes epochs and batch and sweeps only lr, so those come back None and
+    are not compared.
+    """
+    import pandas as pd
+
+    path = artifacts / filename
+    if not path.exists():
+        return None, "not run yet"
+    try:
+        table = pd.read_csv(path, comment="#")
+    except Exception as exc:  # noqa: BLE001
+        return None, "unreadable: %s" % exc
+    subset = table[table["arm"] == arm] if "arm" in table else table
+    if subset.empty:
+        return None, "no rows for this arm"
+    winner = subset.loc[subset["f1_macro_val"].idxmax()]
+    return (
+        {
+            "epochs": int(winner["epochs"]) if "epochs" in winner else None,
+            "batch": int(winner["batch"]) if "batch" in winner else None,
+            "lr": float(winner["lr"]),
+            "f1_macro_val": float(winner["f1_macro_val"]),
+        },
+        None,
+    )
+
+
+def _preflight_config_matches_sweeps(cfg: dict, arms_cfg: dict) -> bool:
+    """Does every locked value in arms.yaml match the recorded sweep winner?
+
+    The failure this catches: arms.yaml half restored, or edited by hand, so one
+    arm carries a value no sweep ever selected. Script 03 would then train 15
+    folds of that arm under a configuration with no provenance, and the drift
+    guard would not notice -- it compares arms.yaml against the REGISTRY, and an
+    arm with no completed cv runs has nothing to disagree with.
+    """
+    print("\n  arms.yaml against the recorded sweep winners:")
+    print(
+        "    %-20s %-26s %-26s %s"
+        % ("arm", "arms.yaml", "sweep winner", "verdict")
+    )
+    artifacts = artifacts_dir(cfg)
+    ok = True
+
+    def describe(block):
+        if block is None:
+            return "--"
+        parts = []
+        for field in ("epochs", "batch", "lr"):
+            if block.get(field) is not None:
+                parts.append("%s=%s" % (field[0], block[field]))
+        return " ".join(parts)
+
+    for arm, entry in sorted((arms_cfg.get("arms") or {}).items()):
+        filename, producer = SWEEP_SOURCES.get(arm, (None, None))
+        if filename is None:
+            continue
+        live = {
+            "epochs": entry.get("epochs"),
+            "batch": entry.get("batch"),
+            "lr": entry.get("lr"),
+        }
+        winner, why = _recorded_winner(arm, artifacts, filename)
+        if winner is None:
+            verdict = "no record (%s)" % why
+            if entry.get("lr") is not None and entry.get("locked"):
+                verdict = "LOCKED BUT UNRECORDED (%s)" % why
+                ok = False
+            print("    %-20s %-26s %-26s %s" % (arm, describe(live), "--", verdict))
+            continue
+
+        mismatched = []
+        for field in ("epochs", "batch", "lr"):
+            want = winner.get(field)
+            if want is None or live.get(field) is None:
+                continue
+            if field == "lr":
+                if abs(float(live[field]) - float(want)) > 1e-12:
+                    mismatched.append(field)
+            elif int(live[field]) != int(want):
+                mismatched.append(field)
+
+        if mismatched:
+            ok = False
+            verdict = "MISMATCH on %s" % ", ".join(mismatched)
+        elif live.get("lr") is None:
+            # not a match and not a mismatch: the sweep has a winner but
+            # arms.yaml never received it. Actionable, so say so rather than
+            # reporting "ok" for a comparison that did not happen.
+            ok = False
+            verdict = "UNRESOLVED -- sweep chose lr=%g, arms.yaml has null" % winner["lr"]
+        else:
+            verdict = "ok (%s)" % filename
+        print(
+            "    %-20s %-26s %-26s %s"
+            % (arm, describe(live), describe(winner), verdict)
+        )
+
+    if not ok:
+        print(
+            "\n    [FAIL] configs/arms.yaml does not agree with what the sweeps recorded.\n"
+            "           Script 03 would train 15 folds per arm under a configuration\n"
+            "           no sweep selected, and the drift guard would not catch it:\n"
+            "           that compares arms.yaml against the REGISTRY, and an arm with\n"
+            "           no completed cv runs has nothing to disagree with.\n"
+            "           Restore it:  python scripts/restore_arms.py"
+        )
+    return ok
+
+
 def _preflight_config(cfg: dict) -> tuple[bool, dict]:
     """Is the hyperparameter configuration whole, and did any of it get lost?
 
@@ -367,6 +494,8 @@ def _preflight_config(cfg: dict) -> tuple[bool, dict]:
             "  and 02 have run, and a LOST CONFIG afterwards."
             % (len(pending["lr_null"]) + len(pending["provisional"]))
         )
+
+    ok = _preflight_config_matches_sweeps(cfg, arms_cfg) and ok
 
     status = arms_snapshot_status(cfg)
     print("\n  resolved snapshot : %s" % status["path"])

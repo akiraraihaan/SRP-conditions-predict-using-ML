@@ -58,6 +58,89 @@ class MixedHyperparametersError(RuntimeError):
     """An arm's completed runs disagree on the hyperparameters that define them."""
 
 
+def selection_margins(
+    table: "pd.DataFrame",
+    *,
+    val_n: int,
+    k: int = 3,
+    group: str = "arm",
+    score: str = "f1_macro_val",
+    secondary: str | None = "f1_macro_dev_test",
+) -> "pd.DataFrame":
+    """Top-k configurations per group, with how close they are to the winner.
+
+    Shared by the two selection scripts -- 01b's grid and 02's lr sweep -- so a
+    margin means the same thing in both artefacts.
+
+    Selection is and remains ARGMAX. Changing the rule after seeing the results
+    would be post-hoc. What this records is how much the argmax actually won by,
+    in a unit that says whether the margin is a result or a rounding difference:
+
+      margin_vs_winner    score minus the winner's score (0 for the winner)
+      images_equivalent   that margin expressed in validation images, from the
+                          ACTUAL size of the validation partition
+      `secondary`_rank    where the row ranks on the secondary score, so a
+                          winner that loses on held-out data is visible
+
+    The secondary column exists because selection on validation can pick a
+    configuration that is not the best on the development test partition. That
+    is not a bug -- selecting on the test partition would be the bug -- but it
+    belongs on the record rather than in an argument afterwards.
+    """
+    rows = []
+    for name, raw in table.groupby(group):
+        ranked = raw.sort_values(score, ascending=False)
+        best = float(ranked[score].iloc[0])
+        secondary_order = None
+        if secondary and secondary in ranked:
+            secondary_order = list(
+                ranked.sort_values(secondary, ascending=False)[score]
+            )
+        for rank, record in enumerate(ranked.head(k).to_dict("records"), 1):
+            margin = float(record[score]) - best
+            row = {
+                group: name,
+                "rank": rank,
+                "margin_vs_winner": round(margin, 6),
+                "images_equivalent": round(abs(margin) * val_n, 3),
+                "selected": rank == 1,
+            }
+            row.update({key: value for key, value in record.items() if key != group})
+            if secondary_order is not None:
+                row["%s_rank" % secondary] = secondary_order.index(record[score]) + 1
+            rows.append(row)
+    frame = pd.DataFrame(rows)
+    lead = [group, "rank", "selected", "margin_vs_winner", "images_equivalent"]
+    ordered = lead + [c for c in frame.columns if c not in lead]
+    return frame[ordered]
+
+
+def print_selection_margins(frame: "pd.DataFrame", *, val_n: int, group: str = "arm",
+                            label: str = "key") -> None:
+    print(
+        "\n  %-20s %-4s %-22s %14s %10s %9s"
+        % (group, "rank", label, "f1_macro_val", "margin", "~images")
+    )
+    for name, raw in frame.groupby(group):
+        for row in raw.sort_values("rank").to_dict("records"):
+            print(
+                "  %-20s %-4d %-22s %14.4f %10s %9s"
+                % (
+                    name if row["rank"] == 1 else "",
+                    row["rank"],
+                    row.get(label, ""),
+                    row["f1_macro_val"],
+                    "--" if row["rank"] == 1 else "%+.4f" % row["margin_vs_winner"],
+                    "--" if row["rank"] == 1 else "%.2f" % row["images_equivalent"],
+                )
+            )
+    print(
+        "\n  Selection is argmax on validation macro-F1 and stays argmax. '~images' is\n"
+        "  the margin in validation images (%d in this partition): the unit that says\n"
+        "  whether a margin is a result or a rounding difference." % val_n
+    )
+
+
 def provenance(records: list[dict[str, Any]], path: Path | None = None) -> dict[str, Any]:
     """What a generated artefact was built from.
 

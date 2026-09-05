@@ -143,59 +143,19 @@ def write_topk(table, artifacts: Path, k: int = TOP_K) -> Path:
     `images_equivalent` converts a margin into the number of validation images it
     corresponds to, which is the unit that makes it interpretable.
     """
-    rows = []
-    for arm, group in table.groupby("arm"):
-        ranked = group.sort_values("f1_macro_val", ascending=False).head(k)
-        best = float(ranked["f1_macro_val"].iloc[0])
-        for rank, record in enumerate(ranked.to_dict("records"), 1):
-            margin = float(record["f1_macro_val"]) - best
-            rows.append(
-                {
-                    "arm": arm,
-                    "rank": rank,
-                    "key": record["key"],
-                    "epochs": record["epochs"],
-                    "batch": record["batch"],
-                    "lr": record["lr"],
-                    "f1_macro_val": record["f1_macro_val"],
-                    "f1_macro_dev_test": record["f1_macro_dev_test"],
-                    "margin_vs_winner": round(margin, 6),
-                    "images_equivalent": round(abs(margin) * DEV_VAL_N, 2),
-                    "selected": rank == 1,
-                }
-            )
-    frame = pd.DataFrame(rows)
+    from srpcard import aggregate
+
+    frame = aggregate.selection_margins(table, val_n=DEV_VAL_N, k=k)
     target = artifacts / "uniform_grid_topk.csv"
     frame.to_csv(target, index=False, lineterminator="\n")
     return target
 
 
 def print_topk(table, k: int = TOP_K) -> None:
-    print(
-        "\n  %-10s %-4s %-22s %14s %10s %10s"
-        % ("arm", "rank", "key", "f1_macro_val", "margin", "~images")
-    )
-    for arm, group in table.groupby("arm"):
-        ranked = group.sort_values("f1_macro_val", ascending=False).head(k)
-        best = float(ranked["f1_macro_val"].iloc[0])
-        for rank, record in enumerate(ranked.to_dict("records"), 1):
-            margin = float(record["f1_macro_val"]) - best
-            print(
-                "  %-10s %-4d %-22s %14.4f %10s %10s"
-                % (
-                    arm if rank == 1 else "",
-                    rank,
-                    record["key"],
-                    record["f1_macro_val"],
-                    "--" if rank == 1 else "%+.4f" % margin,
-                    "--" if rank == 1 else "%.1f" % (abs(margin) * DEV_VAL_N),
-                )
-            )
-    print(
-        "\n  The locked configuration is the argmax and stays the argmax. '~images' is\n"
-        "  the margin expressed in validation images (%d in the dev split), which is\n"
-        "  the unit that says whether a margin is a result or a rounding difference."
-        % DEV_VAL_N
+    from srpcard import aggregate
+
+    aggregate.print_selection_margins(
+        aggregate.selection_margins(table, val_n=DEV_VAL_N, k=k), val_n=DEV_VAL_N
     )
 
 

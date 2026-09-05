@@ -41,6 +41,7 @@ sitting in the final 75. It was truncated deliberately — see §4.4.
 | `scripts/01b_uniform_grid.py` | the 54-run grid for all three YOLO arms, under the uniform protocol |
 | `scripts/restore_arms.py` | puts `artifacts/resolved_arms.yaml` back over `configs/arms.yaml` |
 | `scripts/backfill_efficiency.py` | fills derived efficiency fields in existing registry records |
+| `scripts/merge_registry.py` | merges two diverged copies of `registry.jsonl` by `run_id` |
 | `tests/` | pytest suite; everything writes to `tmp_path`, never to `artifacts/` |
 | `notebooks/colab_runner.ipynb` | **the primary runner**, 19 cells, no experiment logic |
 | `docs/COLAB_SETUP.md` | Drive layout, dataset upload, the `artifacts/` symlink, CPU-runtime fallback |
@@ -329,6 +330,34 @@ scripts) and names each conflicting record's source script. It proposes deletion
 **only** when the conflict is same-script, same-protocol. When the records come
 from elsewhere it says so, calls it a scoping error in the caller, and states
 explicitly: *do not delete those records, do not run `restore_arms.py`*.
+
+### 4.5.2 When the registry diverges
+
+The registry legitimately lives in two places -- committed in the repository, and
+live in whatever durable storage a session writes to. They diverge as soon as one
+is edited without the other, and **neither is reliably a superset**. That happened:
+a backfill adding device provenance was committed while a session appended six new
+runs elsewhere, so overwriting either direction lost work.
+
+```bash
+python scripts/merge_registry.py A.jsonl B.jsonl --out C.jsonl --dry-run
+python scripts/merge_registry.py A.jsonl B.jsonl --out C.jsonl
+```
+
+Merging is safe because a record is **immutable once written**: `run_id` is a hash
+of the parameters defining the run, so two records sharing an id describe the same
+run and can differ only in completeness. The merge keeps the more populated one and
+fills its gaps from the other, overwriting nothing.
+
+If two records sharing an id **disagree on a measured value** -- `f1_macro`,
+`accuracy`, the per-class arrays, the confusion matrix, `wall_time_s` -- the
+immutability assumption is false: they are different runs wearing one id. The merge
+then refuses outright, names every disagreement, exits non-zero and **writes
+nothing**. It also backs the output path up to a timestamped `.bak` first.
+
+The Colab symlink cell uses the same code rather than reimplementing it, so the
+divergence cannot recur: it reconciles the two copies instead of preferring one,
+and aborts the session if they conflict.
 
 ### 4.6 Recovering a resolved config
 
@@ -668,7 +697,7 @@ pip install pytest
 python -m pytest
 ```
 
-107 tests, ~14 s, no GPU and no dataset needed. They cover the registry schema
+126 tests, ~20 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,
