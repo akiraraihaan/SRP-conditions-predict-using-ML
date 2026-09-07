@@ -314,4 +314,3 @@ Best-weight selection on such a slice is noisy for these classes. This does not 
 | severe_vibration | 93 | 10 | 26 |
 | vibration | 33 | 4 | 9 |
 | **TOTAL** | 481 | 54 | 133 |
-
