@@ -1,10 +1,15 @@
 #!/usr/bin/env python
-"""04 -- class-weight ablation on yolo26n. 15 runs.
+"""04 -- class-weight ablation on the SELECTED arm. 15 runs.
 
     python scripts/04_run_ablation.py
     python scripts/04_run_ablation.py --dry-run
 
-Identical to the yolo26n runs of script 03 in every respect -- same folds, same
+The arm is configs/arms.yaml:ablation.arm, which is the model the protocol
+selected in script 03 -- mobilenetv3_small, not yolo26n. Ablating a dominated
+arm would measure something the paper does not use. See the note above
+`ablation:` in configs/arms.yaml and MIGRATION_NOTES.md section 17.
+
+Identical to that arm's runs of script 03 in every respect -- same folds, same
 run_seed and val_seed, same epochs, batch and lr, same selection criterion --
 EXCEPT `class_weights: none`. The seeds are pure functions of (repeat, fold), so
 the weighted and unweighted arms share their head initialisation, their batch

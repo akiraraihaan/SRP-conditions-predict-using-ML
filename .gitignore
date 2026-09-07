@@ -89,6 +89,10 @@ artifacts/*
 !artifacts/summary_per_class.csv
 # 06
 !artifacts/selected_epochs.csv
+# 06, every pair of arms compared fold by fold
+!artifacts/paired_comparisons.csv
+# 06, which arms are on the Pareto frontier and who dominates the rest
+!artifacts/pareto_status.csv
 # 04
 !artifacts/ablation_paired.csv
 # 04

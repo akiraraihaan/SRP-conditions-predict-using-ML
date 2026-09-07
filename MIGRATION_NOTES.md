@@ -1157,3 +1157,99 @@ images, the unit that says whether it is a result or a rounding difference:
 yolo26n's winner is ahead by less than one image. The selection rule stays argmax
 — changing it after seeing the results would be post-hoc — and the margin is
 reported instead.
+
+---
+
+## 17. The protocol selected a different model from the one the paper reports
+
+Script 03 completed the 5x3-fold cross-validation for all five arms. The result
+overturns the manuscript's central conclusion, and it does so on the protocol the
+manuscript itself specifies -- so this section records what was measured, and why
+the two supporting analyses were re-pointed as a consequence rather than as a
+reaction.
+
+### 17.1 What script 03 measured
+
+Mean test macro-F1 over the folds, with the four Pareto objectives:
+
+| arm | folds | test macro-F1 | params | GFLOPs | size (MB, fp16) | frontier |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| resnet18 | 14 | 0.5997 | 11,181,642 | 3.6471 | 21.377 | **yes** |
+| **mobilenetv3_small** | 15 | **0.5900** | **1,528,106** | **0.1229** | **3.004** | **yes** |
+| yolo26m | 15 | 0.5301 | 10,366,026 | 4.8512 | 19.892 | no |
+| yolo26n | 15 | 0.5231 | 1,543,914 | 0.3983 | 3.026 | no |
+| yolo26s | 15 | 0.5039 | 5,455,818 | 1.4864 | 10.501 | no |
+
+`resnet18` is at 14 folds while its last run completes; every comparison below is
+paired over the folds both arms finished.
+
+### 17.2 mobilenetv3_small beats yolo26n, and dominates it
+
+Paired per-fold differences (`artifacts/paired_comparisons.csv`):
+
+| a | b | n | mean | 95% CI | Wilcoxon p | a wins |
+| --- | --- | ---: | ---: | --- | ---: | ---: |
+| mobilenetv3_small | yolo26n | 15 | **+0.0669** | [+0.0158, +0.1181] | 0.0215 | 12/15 |
+| mobilenetv3_small | yolo26m | 15 | +0.0599 | [+0.0144, +0.1055] | 0.0215 | 11/15 |
+| mobilenetv3_small | yolo26s | 15 | +0.0861 | [+0.0475, +0.1248] | 0.0009 | 13/15 |
+| resnet18 | yolo26n | 14 | +0.0780 | [+0.0496, +0.1064] | 0.0004 | 13/14 |
+| resnet18 | mobilenetv3_small | 14 | +0.0142 | [−0.0343, +0.0627] | 0.5830 | 7/14 |
+
+It is not only ahead on accuracy. It dominates yolo26n **on all four objectives
+at once** -- higher F1, fewer parameters, a third of the GFLOPs, and a marginally
+smaller deployed model. That is an unusual result and worth stating plainly: the
+YOLO classification backbones are not paying for their cost here.
+
+The Pareto frontier is `{mobilenetv3_small, resnet18}` and **all three YOLO arms
+are dominated** (`artifacts/pareto_status.csv`). `yolo26s` is dominated twice
+over, by `mobilenetv3_small` and by `yolo26n`.
+
+### 17.3 The three YOLO variants are indistinguishable
+
+| a | b | mean | 95% CI | Wilcoxon p |
+| --- | --- | ---: | --- | ---: |
+| yolo26m | yolo26n | +0.0070 | [−0.0161, +0.0301] | 0.42 |
+| yolo26n | yolo26s | +0.0192 | [−0.0107, +0.0491] | 0.28 |
+| yolo26m | yolo26s | +0.0262 | [−0.0050, +0.0573] | 0.23 |
+
+Every interval spans zero. The prior study's within-nano/small/medium comparison
+was reported as meaningful; on the clean corpus under the uniform protocol it is
+not. This compounds §13.3, which found that the significance claimed for that
+comparison came from the validation partition rather than the test partition.
+
+### 17.4 Why the supporting analyses moved to mobilenetv3_small
+
+`configs/arms.yaml` previously ran both the class-weight ablation (script 04) and
+the learning curve (script 05) on `yolo26n`. Both are now `mobilenetv3_small`.
+
+**This follows the protocol; it does not react to it.** Both are supporting
+analyses *of the selected model*. The selection rule -- cross-validated test
+macro-F1 with the four-objective Pareto view -- was fixed before script 03 ran,
+and it has now selected `mobilenetv3_small`. Ablating class weights on a
+dominated arm would measure the sensitivity of a model the paper does not use,
+and a learning curve for it would describe the data requirements of a model
+nobody would deploy.
+
+Leaving them on `yolo26n` would have been the post-hoc choice: keeping a
+configuration that the protocol had just rejected, because it was the one written
+down first.
+
+The reason is recorded in three places so it cannot later look like a quiet
+edit: the comment above `ablation:` in `configs/arms.yaml`, this section, and the
+docstrings of scripts 04 and 05.
+
+### 17.5 What this costs the manuscript
+
+The conclusion that a YOLO26 classification backbone is the right choice for this
+task does not survive. What replaces it is a stronger and more useful claim: on
+668 clean dynamometer cards, a 1.5 M-parameter MobileNetV3-Small at 0.12 GFLOPs
+matches or beats every YOLO variant tried, including one seven times its size,
+while being the cheapest model in the comparison on every axis.
+
+The edge-deployment argument is strengthened rather than weakened. It just names
+a different model.
+
+None of this was visible before the corpus was cleaned, the class weights were
+actually applied, the augmentation was removed and the folds were made paired --
+which is to say it was not visible under any of the protocols in §§5.4, 12, 13
+and 16.

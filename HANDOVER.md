@@ -448,6 +448,29 @@ MIGRATION_NOTES §16.6. If you add an artefact, add it to that test.
 
 ---
 
+## 4.8 The protocol selected a different model
+
+Script 03 changes the conclusion. Paired over the shared folds,
+`mobilenetv3_small` beats `yolo26n` by **+0.0669 [+0.0158, +0.1181]**, winning 12
+of 15, and **dominates it on all four Pareto objectives at once** (F1 0.5900 vs
+0.5231; 1.528 M vs 1.544 M params; 0.1229 vs 0.3983 GFLOPs; 3.001 vs 3.022 MB
+fp16). The frontier is `{mobilenetv3_small, resnet18}`; all three YOLO arms are
+dominated, and the three YOLO variants are indistinguishable from each other
+(m−n +0.0070 p=0.42, n−s +0.0192 p=0.28).
+
+`configs/arms.yaml` therefore runs the ablation (04) and the learning curve (05)
+on `mobilenetv3_small`. Both are supporting analyses **of the selected model**,
+and the protocol has selected it — leaving them on a dominated arm would have
+been the post-hoc choice. MIGRATION_NOTES §17 records the numbers and the
+reasoning; the comment above `ablation:` in the config repeats it.
+
+Two new tables, written by script 06:
+
+| artefact | what |
+| --- | --- |
+| `artifacts/paired_comparisons.csv` | every pair of arms fold by fold: mean difference, 95% CI, Wilcoxon p, win counts. Its header states that repeated CV makes the folds overlap, so **the effect sizes and intervals are the substance and the p-values are optimistic** |
+| `artifacts/pareto_status.csv` | frontier membership, and for each dominated arm which arms dominate it and on which objectives |
+
 ## 5. Things to look at before writing the methods section
 
 1. **`selected_epoch` distribution.** `artifacts/selected_epochs.csv` and
@@ -697,7 +720,7 @@ pip install pytest
 python -m pytest
 ```
 
-126 tests, ~20 s, no GPU and no dataset needed. They cover the registry schema
+141 tests, ~19 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

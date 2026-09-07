@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""05 -- learning curve under the FINAL locked yolo26n configuration.
+"""05 -- learning curve under the SELECTED arm's FINAL locked configuration.
 
     python scripts/05_learning_curve.py
     python scripts/05_learning_curve.py --dry-run
@@ -116,7 +116,7 @@ def main() -> int:
 
     rule("05 -- learning curve (%s, FINAL locked configuration)" % arm)
     print(
-        "  locked config : epochs %d  batch %d  lr %g   (NOT the legacy lr 1e-3)"
+        "  locked config : epochs %d  batch %d  lr %g"
         % (arm_cfg["epochs"], arm_cfg["batch"], arm_cfg["lr"])
     )
     print("  fractions     : %s" % fractions)

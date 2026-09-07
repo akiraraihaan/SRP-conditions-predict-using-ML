@@ -144,13 +144,43 @@ baseline_lr_sweep:
   batch: 16          # fixed, not swept
   epochs: 50
 
+# --- Supporting analyses, both on the SELECTED model ---------------------
+#
+# Both `ablation.arm` and `learning_curve.arm` were yolo26n until script 03
+# completed. They are now mobilenetv3_small, because that is what the protocol
+# selected -- NOT because of a preference discovered afterwards.
+#
+# Script 03's paired comparison over the shared folds:
+#
+#     mobilenetv3_small - yolo26n   +0.0669  [+0.0158, +0.1181]   12/15 folds
+#     mean test macro-F1            0.5900 vs 0.5231
+#
+# and mobilenetv3_small dominates yolo26n on all four Pareto objectives at once:
+#
+#     F1     0.5900  vs  0.5231
+#     params 1.528 M  vs  1.544 M
+#     GFLOPs 0.1229   vs  0.3983
+#     size   3.001 MB vs  3.022 MB   (fp16 weights, as deployed)
+#
+# The Pareto frontier is {mobilenetv3_small, resnet18}; all three YOLO arms are
+# dominated. The three YOLO variants are indistinguishable from each other
+# (m-n +0.0070 p=0.42, n-s +0.0192 p=0.28), so "the best YOLO" is not a
+# meaningful choice either.
+#
+# These two are supporting analyses OF THE SELECTED MODEL. Running them on a
+# dominated arm would measure something the paper does not use. Leaving them on
+# yolo26n would be the post-hoc choice, not changing them.
+#
+# See artifacts/paired_comparisons.csv, artifacts/pareto_status.csv and
+# MIGRATION_NOTES.md section 17.
+
 ablation:
-  arm: yolo26n
+  arm: mobilenetv3_small
   # Identical to the arm's 03 runs in every respect except this.
   class_weights: none
 
 learning_curve:
-  arm: yolo26n       # under the FINAL locked config, not the old reference one
+  arm: mobilenetv3_small   # the SELECTED model; see the note above ablation
   fractions: [0.2, 0.4, 0.6, 0.8, 1.0]
   # NO `repeats` key, deliberately. 5 fractions x 15 folds = 75 runs, which is
   # 15 estimates per fraction. The 15 folds ALREADY are 3 repeats of 5-fold CV,

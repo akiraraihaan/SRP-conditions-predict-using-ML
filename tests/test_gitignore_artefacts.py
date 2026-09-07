@@ -42,6 +42,8 @@ COMMITTED = [
     ("artifacts/summary_cv.csv", "06", "manuscript table"),
     ("artifacts/summary_per_class.csv", "06", "manuscript table"),
     ("artifacts/selected_epochs.csv", "06", "manuscript table"),
+    ("artifacts/paired_comparisons.csv", "06", "every pair of arms, fold by fold"),
+    ("artifacts/pareto_status.csv", "06", "Pareto frontier and domination"),
     ("artifacts/edge_benchmark.json", "07", "Raspberry Pi results"),
     ("artifacts/figures/fig_pareto.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_pareto.png", "06", "publication figure"),

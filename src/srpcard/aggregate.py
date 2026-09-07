@@ -33,7 +33,13 @@ CV_SCRIPT = "03_run_cv"
 
 # Everything write_all() produces. Script 06 clears these before regenerating,
 # so an interrupted run cannot leave a mix of fresh and stale tables.
-TABLE_NAMES = ("summary_cv.csv", "summary_per_class.csv", "selected_epochs.csv")
+TABLE_NAMES = (
+    "summary_cv.csv",
+    "summary_per_class.csv",
+    "selected_epochs.csv",
+    "paired_comparisons.csv",
+    "pareto_status.csv",
+)
 
 SCALAR_METRICS = [
     "f1_macro",
@@ -56,6 +62,181 @@ SCALAR_METRICS = [
 
 class MixedHyperparametersError(RuntimeError):
     """An arm's completed runs disagree on the hyperparameters that define them."""
+
+
+# --------------------------------------------------------------------------
+# comparing arms
+# --------------------------------------------------------------------------
+
+# The Pareto objectives: one to maximise, three to minimise. size_mb_fp16 rather
+# than size_mb because fp16 is what the framework deploys (efficiency.py), and
+# naming it explicitly means the objective cannot silently change if the alias
+# does.
+PARETO_MAXIMISE = ("f1_macro",)
+PARETO_MINIMISE = ("params", "gflops", "size_mb_fp16")
+
+PAIRED_HEADER = [
+    "Paired per-fold differences between every pair of arms.",
+    "",
+    "Each row is arm_a minus arm_b over the folds BOTH completed, so an arm with",
+    "runs still outstanding is compared only on what it has. n_folds says how many.",
+    "",
+    "READ THE EFFECT SIZE AND THE INTERVAL, NOT THE p-VALUE. The 15 folds are",
+    "5-fold CV repeated 3 times, so every image appears in three test partitions",
+    "and the folds are NOT independent. Both the t interval and the Wilcoxon test",
+    "assume independence, so the intervals are too narrow and the p-values are",
+    "optimistic -- they overstate significance by an amount nobody here has",
+    "quantified. mean_diff and its interval are the substance; p is reported",
+    "because reviewers expect it, not because it is trustworthy.",
+]
+
+
+def _fold_key(record: dict[str, Any]) -> str:
+    return "r%sf%s" % (record.get("repeat"), record.get("fold"))
+
+
+def paired_comparisons(
+    records: list[dict[str, Any]] | None = None, metric: str = "f1_macro"
+) -> pd.DataFrame:
+    """Every pair of arms, compared fold by fold on the folds both completed.
+
+    Returns mean difference, its 95% t interval, the Wilcoxon signed-rank
+    p-value, and how many folds each arm won. Pairs are ordered so `mean_diff`
+    is positive when arm_a is ahead.
+    """
+    import itertools
+
+    records = records if records is not None else cv_records()
+    if not records:
+        return pd.DataFrame()
+    assert_hyperparameters_unanimous(records)
+
+    frame = pd.DataFrame(
+        [{"arm": r["arm"], "fold": _fold_key(r), metric: r.get(metric)} for r in records]
+    ).dropna(subset=[metric])
+    wide = frame.pivot(index="fold", columns="arm", values=metric)
+
+    rows = []
+    for arm_a, arm_b in itertools.combinations(sorted(wide.columns), 2):
+        both = wide[[arm_a, arm_b]].dropna()
+        if both.empty:
+            continue
+        difference = (both[arm_a] - both[arm_b]).to_numpy(dtype=float)
+        n = len(difference)
+        mean = float(difference.mean())
+        # orient the pair so the reported difference is positive
+        if mean < 0:
+            arm_a, arm_b = arm_b, arm_a
+            difference = -difference
+            mean = -mean
+
+        low = high = float("nan")
+        p_value = float("nan")
+        if n > 1:
+            try:
+                from scipy import stats
+
+                error = float(difference.std(ddof=1)) / np.sqrt(n)
+                if error > 0:
+                    low, high = stats.t.interval(0.95, n - 1, loc=mean, scale=error)
+                else:
+                    low = high = mean
+                if np.any(difference != 0):
+                    p_value = float(stats.wilcoxon(difference).pvalue)
+            except ImportError:
+                pass
+
+        rows.append(
+            {
+                "arm_a": arm_a,
+                "arm_b": arm_b,
+                "n_folds": n,
+                "mean_diff": round(mean, 6),
+                "ci95_low": round(float(low), 6),
+                "ci95_high": round(float(high), 6),
+                "wilcoxon_p": round(p_value, 6) if p_value == p_value else None,
+                "a_wins": int((difference > 0).sum()),
+                "b_wins": int((difference < 0).sum()),
+                "ties": int((difference == 0).sum()),
+                "ci_excludes_zero": bool(low > 0) if low == low else None,
+                "metric": metric,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("mean_diff", ascending=False).reset_index(drop=True)
+
+
+def pareto_status(records: list[dict[str, Any]] | None = None) -> pd.DataFrame:
+    """Which arms are on the Pareto frontier, and who dominates the rest.
+
+    One objective is maximised (mean test macro-F1 over the arm's folds) and
+    three are minimised (params, GFLOPs, fp16 size). Arm X dominates arm Y when
+    it is no worse on every objective and strictly better on at least one.
+
+    For a dominated arm, `dominated_by` names every arm that dominates it and
+    `dominated_on` the objectives on which each is strictly better -- so the
+    table answers "why is this arm not on the frontier" without recomputation.
+    """
+    records = records if records is not None else cv_records()
+    if not records:
+        return pd.DataFrame()
+    assert_hyperparameters_unanimous(records)
+
+    objectives = list(PARETO_MAXIMISE) + list(PARETO_MINIMISE)
+    frame = pd.DataFrame(
+        [{"arm": r["arm"], **{o: r.get(o) for o in objectives}} for r in records]
+    )
+    aggregated = frame.groupby("arm").agg(
+        n_folds=("f1_macro", "size"),
+        **{
+            "f1_macro": ("f1_macro", "mean"),
+            **{o: (o, "first") for o in PARETO_MINIMISE},
+        },
+    )
+
+    def dominates(x, y) -> list[str]:
+        """The objectives on which x is strictly better, or [] if x does not dominate."""
+        better = []
+        for objective in PARETO_MAXIMISE:
+            if x[objective] < y[objective]:
+                return []
+            if x[objective] > y[objective]:
+                better.append(objective)
+        for objective in PARETO_MINIMISE:
+            if x[objective] > y[objective]:
+                return []
+            if x[objective] < y[objective]:
+                better.append(objective)
+        return better
+
+    rows = []
+    for arm in aggregated.index:
+        dominators = {}
+        for other in aggregated.index:
+            if other == arm:
+                continue
+            better = dominates(aggregated.loc[other], aggregated.loc[arm])
+            if better:
+                dominators[other] = better
+        rows.append(
+            {
+                "arm": arm,
+                "n_folds": int(aggregated.loc[arm, "n_folds"]),
+                "f1_macro_mean": round(float(aggregated.loc[arm, "f1_macro"]), 6),
+                **{o: aggregated.loc[arm, o] for o in PARETO_MINIMISE},
+                "on_pareto_frontier": not dominators,
+                "dominated_by": "; ".join(sorted(dominators)) or "",
+                "dominated_on": "; ".join(
+                    "%s:%s" % (name, "+".join(fields))
+                    for name, fields in sorted(dominators.items())
+                ),
+                "n_dominators": len(dominators),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["on_pareto_frontier", "f1_macro_mean"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
 
 
 def selection_margins(
@@ -200,14 +381,20 @@ def provenance_caption(block: dict[str, Any]) -> str:
 
 
 def write_csv_with_provenance(
-    frame: pd.DataFrame, target: Path, block: dict[str, Any]
+    frame: pd.DataFrame,
+    target: Path,
+    block: dict[str, Any],
+    extra_header: list[str] | None = None,
 ) -> Path:
     """Write a table with the provenance stamp as leading `#` comment lines.
 
     pandas.read_csv(comment="#") skips them, and every consumer in this
     repository reads these files with pandas.
     """
-    header = "".join("# %s\n" % line for line in provenance_lines(block))
+    lines = list(provenance_lines(block))
+    if extra_header:
+        lines = list(extra_header) + [""] + lines
+    header = "".join(("# %s\n" % line).replace("# \n", "#\n") for line in lines)
     target.write_text(
         header + frame.to_csv(index=False, lineterminator="\n"),
         encoding="utf-8",
@@ -423,6 +610,26 @@ def write_all(data_cfg: dict[str, Any] | None = None, path: Path | None = None) 
     if not epochs.empty:
         written["selected_epochs"] = write_csv_with_provenance(
             epochs, out / "selected_epochs.csv", stamp
+        )
+
+    paired = paired_comparisons(records)
+    if not paired.empty:
+        written["paired_comparisons"] = write_csv_with_provenance(
+            paired, out / "paired_comparisons.csv", stamp, extra_header=PAIRED_HEADER
+        )
+
+    pareto = pareto_status(records)
+    if not pareto.empty:
+        written["pareto_status"] = write_csv_with_provenance(
+            pareto, out / "pareto_status.csv", stamp,
+            extra_header=[
+                "Pareto dominance over mean test macro-F1 (maximised) and",
+                "params / GFLOPs / size_mb_fp16 (minimised).",
+                "",
+                "An arm is dominated when another is no worse on all four and",
+                "strictly better on at least one. dominated_on names the objectives",
+                "each dominator wins on.",
+            ],
         )
 
     return written
