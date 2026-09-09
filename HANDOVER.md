@@ -471,6 +471,48 @@ Two new tables, written by script 06:
 | `artifacts/paired_comparisons.csv` | every pair of arms fold by fold: mean difference, 95% CI, Wilcoxon p, win counts. Its header states that repeated CV makes the folds overlap, so **the effect sizes and intervals are the substance and the p-values are optimistic** |
 | `artifacts/pareto_status.csv` | frontier membership, and for each dominated arm which arms dominate it and on which objectives |
 
+## 4.9 Which arm the paper reports in detail
+
+`configs/arms.yaml:reporting.detailed_arm` names it. It is **not** "the highest
+mean F1", and the two differ here: `resnet18` leads `mobilenetv3_small` 0.5997 to
+0.5900, a gap of +0.0142 [-0.0343, +0.0627], p=0.58 -- indistinguishable from
+zero -- for 21.4 MB and 3.65 GFLOPs against 3.0 MB and 0.12. The detailed
+evaluation belongs to the model the paper recommends, so it is
+`mobilenetv3_small`.
+
+Script 06 draws a confusion matrix for the detailed arm **and for every
+non-dominated arm**, so both frontier points are available. The arm is in the
+filename (`fig_confusion_mobilenetv3_small`), never `fig_confusion_best`.
+
+Every matrix is **summed over all 15 folds**, never taken from one and never
+averaged: repeated CV puts each of the 668 clean images in three test partitions,
+so a complete arm must total exactly **2004** predictions.
+`aggregate.check_confusion_total` raises if a complete arm misses that, and
+labels the caption INCOMPLETE with the shortfall if folds are still outstanding.
+
+### Provenance is per artefact
+
+A single run-wide stamp used to say `75 records, scripts: 03_run_cv` on every
+figure -- including the learning-curve and ablation figures, which are built from
+script 05 and 04 records. It named runs those figures never saw and omitted the
+ones they did.
+
+Each figure is now stamped with exactly the records that fed it, and
+`aggregate.assert_provenance_covers` refuses a stamp whose record count or script
+list disagrees. `figures.set_provenance` is reached only through 06's `stamped()`
+helper, which always verifies. The PDF metadata carries the script list too:
+
+```
+fig_ablation.pdf         records=15 scripts=04_run_ablation arms=mobilenetv3_small
+fig_learning_curve.pdf   records=75 scripts=05_learning_curve arms=mobilenetv3_small
+fig_confusion_*.pdf      records=15 scripts=03_run_cv arms=<that arm>
+fig_class_distribution   records=0  scripts=none sources=artifacts/image_index.csv
+```
+
+`summary_per_class.csv` now carries `precision`/`recall`/`f1` mean and sd across
+folds plus `support_total` and `support_mean`, so the manuscript's per-class table
+needs no recomputation. `support_total` is the class's clean count times 3.
+
 ## 5. Things to look at before writing the methods section
 
 1. **`selected_epoch` distribution.** `artifacts/selected_epochs.csv` and
@@ -720,7 +762,7 @@ pip install pytest
 python -m pytest
 ```
 
-141 tests, ~19 s, no GPU and no dataset needed. They cover the registry schema
+159 tests, ~76 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

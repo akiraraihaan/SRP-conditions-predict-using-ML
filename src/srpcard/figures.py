@@ -85,10 +85,14 @@ def save(fig, out_dir: Path, name: str) -> list[Path]:
             "Title": name,
             "Subject": provenance_caption(PROVENANCE),
             "Creator": "srpcard/figures.py",
-            "Keywords": "records=%d arms=%s registry=%s"
+            # scripts belongs here, not only in the Subject line: it is the
+            # claim a reader checks -- "which runs is this figure of?"
+            "Keywords": "records=%d scripts=%s arms=%s sources=%s registry=%s"
             % (
                 PROVENANCE["n_records"],
-                ",".join(PROVENANCE["arms"]),
+                ",".join(PROVENANCE.get("scripts") or []) or "none",
+                ",".join(PROVENANCE["arms"]) or "none",
+                ",".join(PROVENANCE.get("sources") or []) or "none",
                 PROVENANCE["registry_sha1"],
             ),
         }

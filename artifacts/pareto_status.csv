@@ -5,14 +5,14 @@
 # strictly better on at least one. dominated_on names the objectives
 # each dominator wins on.
 #
-# built from 74 registry record(s)
+# built from 75 registry record(s)
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
 # scripts: 03_run_cv
 # corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
-# registry sha1: 20214f913dc7e450
-# generated: 2026-09-07T01:52:34+00:00
+# registry sha1: 5540888815d618d6
+# generated: 2026-09-09T02:03:23+00:00
 arm,n_folds,f1_macro_mean,params,gflops,size_mb_fp16,on_pareto_frontier,dominated_by,dominated_on,n_dominators
-resnet18,14,0.599748,11181642,3.647053824,21.377,True,,,0
+resnet18,15,0.601989,11181642,3.647053824,21.377,True,,,0
 mobilenetv3_small,15,0.590005,1528106,0.122928368,3.004,True,,,0
 yolo26m,15,0.530062,10366026,4.851194368,19.892,False,mobilenetv3_small,mobilenetv3_small:f1_macro+params+gflops+size_mb_fp16,1
 yolo26n,15,0.523075,1543914,0.398312704,3.026,False,mobilenetv3_small,mobilenetv3_small:f1_macro+params+gflops+size_mb_fp16,1

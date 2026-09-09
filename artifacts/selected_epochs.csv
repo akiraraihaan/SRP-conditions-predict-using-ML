@@ -1,9 +1,9 @@
-# built from 74 registry record(s)
+# built from 75 registry record(s)
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
 # scripts: 03_run_cv
 # corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
-# registry sha1: 20214f913dc7e450
-# generated: 2026-09-07T01:52:34+00:00
+# registry sha1: 5540888815d618d6
+# generated: 2026-09-09T02:03:23+00:00
 arm,repeat,fold,selected_epoch,epoch_budget,fraction_of_budget,min_val_loss_epoch,best_val_f1
 yolo26n,0,0,17,25,0.68,17,0.5907326007326008
 yolo26n,0,1,7,25,0.28,22,0.7116232322888669
@@ -79,3 +79,4 @@ resnet18,2,0,20,50,0.4,44,0.6495454545454544
 resnet18,2,1,30,50,0.6,41,0.7207941816637469
 resnet18,2,2,46,50,0.92,46,0.606621590969417
 resnet18,2,3,25,50,0.5,49,0.6115810359231411
+resnet18,2,4,37,50,0.74,46,0.7017583396995162

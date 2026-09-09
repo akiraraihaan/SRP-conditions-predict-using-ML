@@ -26,7 +26,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import RUN_DEFINING_HYPERPARAMETERS, artifacts_dir, load_data_config
+from .config import (
+    RUN_DEFINING_HYPERPARAMETERS,
+    artifacts_dir,
+    load_data_config,
+    load_folds_config,
+)
 from .registry import load_registry
 
 CV_SCRIPT = "03_run_cv"
@@ -322,13 +327,22 @@ def print_selection_margins(frame: "pd.DataFrame", *, val_n: int, group: str = "
     )
 
 
-def provenance(records: list[dict[str, Any]], path: Path | None = None) -> dict[str, Any]:
-    """What a generated artefact was built from.
+def provenance(
+    records: list[dict[str, Any]],
+    path: Path | None = None,
+    *,
+    sources: list[str] | None = None,
+) -> dict[str, Any]:
+    """What ONE generated artefact was built from.
 
-    Stamped into every table and figure script 06 writes. A stale artefact then
-    announces itself -- "built from 1 record" against a registry holding 75 --
-    instead of waiting for someone to notice that the numbers describe a run
-    that no longer exists.
+    Per artefact, never run-wide. A single stamp reused across every figure said
+    "75 records, scripts: 03_run_cv" on the learning-curve and ablation figures,
+    which are built from script 05 and 04 records -- the stamp named runs those
+    figures never saw and omitted the ones they did.
+
+    `records` must therefore be exactly the records that fed this artefact, and
+    `sources` names any non-registry input (an image index, a CSV) so a figure
+    built from no records still says where it came from.
     """
     from .registry import registry_path
 
@@ -348,15 +362,49 @@ def provenance(records: list[dict[str, Any]], path: Path | None = None) -> dict[
         "n_records": len(records),
         "arms": sorted({r.get("arm") for r in records} - {None}),
         "scripts": sorted({r.get("script") for r in records} - {None}),
+        "sources": sorted(sources or []),
         "corpus_fingerprint": fingerprints[0] if len(fingerprints) == 1 else fingerprints,
         "registry_sha1": digest,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
 
+def assert_provenance_covers(block: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    """Refuse a stamp that does not account for exactly the records consumed.
+
+    The failure this catches: a figure built from script 04's ablation records
+    carrying a stamp that says `scripts: 03_run_cv`. A provenance line that names
+    the wrong runs is worse than none -- it is a claim, and it would be false.
+    """
+    scripts = sorted({r.get("script") for r in records} - {None})
+    problems = []
+    if block.get("n_records") != len(records):
+        problems.append(
+            "n_records says %s, %d record(s) were consumed"
+            % (block.get("n_records"), len(records))
+        )
+    if sorted(block.get("scripts") or []) != scripts:
+        problems.append(
+            "scripts says %s, the records come from %s"
+            % (block.get("scripts"), scripts)
+        )
+    if problems:
+        raise ValueError(
+            "provenance does not match what was consumed:\n  - %s"
+            % "\n  - ".join(problems)
+        )
+
+
+def records_for_script(
+    script: str, path: Path | None = None
+) -> list[dict[str, Any]]:
+    """Every registry record written by one script."""
+    return [r for r in load_registry(path) if r.get("script") == script]
+
+
 def provenance_lines(block: dict[str, Any]) -> list[str]:
     """The provenance stamp as comment-free `key: value` strings."""
-    return [
+    lines = [
         "built from %d registry record(s)" % block["n_records"],
         "arms: %s" % (", ".join(block["arms"]) or "none"),
         "scripts: %s" % (", ".join(block["scripts"]) or "none"),
@@ -364,19 +412,23 @@ def provenance_lines(block: dict[str, Any]) -> list[str]:
         "registry sha1: %s" % block["registry_sha1"],
         "generated: %s" % block["generated_at"],
     ]
+    if block.get("sources"):
+        lines.insert(3, "sources: %s" % ", ".join(block["sources"]))
+    return lines
 
 
 def provenance_caption(block: dict[str, Any]) -> str:
     """One line, for a figure caption strip."""
-    return (
-        "%d record(s) | arms: %s | corpus %s | registry %s | %s"
-        % (
-            block["n_records"],
-            ",".join(block["arms"]) or "none",
-            block["corpus_fingerprint"],
-            block["registry_sha1"],
-            block["generated_at"],
-        )
+    scripts = ",".join(block.get("scripts") or []) or "none"
+    detail = "%d record(s) from %s" % (block["n_records"], scripts)
+    if block.get("sources"):
+        detail += " + %s" % ",".join(block["sources"])
+    return "%s | arms: %s | corpus %s | registry %s | %s" % (
+        detail,
+        ",".join(block["arms"]) or "none",
+        block["corpus_fingerprint"],
+        block["registry_sha1"],
+        block["generated_at"],
     )
 
 
@@ -512,7 +564,14 @@ def summarise_cv(
 def summarise_per_class(
     records: list[dict[str, Any]] | None = None, data_cfg: dict[str, Any] | None = None
 ) -> pd.DataFrame:
-    """Per-class F1 and recall, mean and std across folds, rarest class first."""
+    """Per-class precision, recall and F1 -- mean and sd across folds -- with the
+    class's test support, so the manuscript's per-class table needs no
+    recomputation.
+
+    `support_total` is the number of test predictions for that class summed over
+    the folds; with the full 15 folds it is the clean-corpus count times 3, since
+    repeated CV puts every image in three test partitions. Rarest class first.
+    """
     data_cfg = data_cfg or load_data_config()
     records = records if records is not None else cv_records()
     if not records:
@@ -527,17 +586,35 @@ def summarise_per_class(
     for arm in sorted({r["arm"] for r in records}):
         subset = [r for r in records if r["arm"] == arm]
         for name in order:
-            f1_values = [r["f1_per_class"][name] for r in subset if r.get("f1_per_class")]
-            recall_values = [r["recall_per_class"][name] for r in subset if r.get("recall_per_class")]
+            def values(field):
+                return [
+                    r[field][name] for r in subset if r.get(field) and name in r[field]
+                ]
+
+            f1_values = values("f1_per_class")
+            recall_values = values("recall_per_class")
+            precision_values = values("precision_per_class")
+            support_values = values("support_per_class")
+
+            def mean_of(seq):
+                return float(np.mean(seq)) if seq else np.nan
+
+            def sd_of(seq):
+                return float(np.std(seq, ddof=1)) if len(seq) > 1 else 0.0
+
             rows.append(
                 {
                     "arm": arm,
                     "class": name,
                     "n_clean": sizes.get(name, 0),
-                    "f1_mean": float(np.mean(f1_values)) if f1_values else np.nan,
-                    "f1_std": float(np.std(f1_values, ddof=1)) if len(f1_values) > 1 else 0.0,
-                    "recall_mean": float(np.mean(recall_values)) if recall_values else np.nan,
-                    "recall_std": float(np.std(recall_values, ddof=1)) if len(recall_values) > 1 else 0.0,
+                    "support_total": int(np.sum(support_values)) if support_values else 0,
+                    "support_mean": mean_of(support_values),
+                    "precision_mean": mean_of(precision_values),
+                    "precision_std": sd_of(precision_values),
+                    "recall_mean": mean_of(recall_values),
+                    "recall_std": sd_of(recall_values),
+                    "f1_mean": mean_of(f1_values),
+                    "f1_std": sd_of(f1_values),
                     "n_folds": len(f1_values),
                 }
             )
@@ -572,17 +649,82 @@ def selected_epoch_distribution(
     return pd.DataFrame(rows)
 
 
+def summed_confusion_matrix(
+    arm: str, records: list[dict[str, Any]] | None = None
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Confusion matrix SUMMED over all of an arm's folds, plus those records.
+
+    Summed, never one fold and never averaged: a single fold's matrix describes
+    134 images and would be reported as though it described the corpus. The
+    records are returned so the caller can stamp the figure with exactly what
+    fed it and check the total.
+    """
+    records = records if records is not None else cv_records()
+    used = [
+        r for r in records if r.get("arm") == arm and r.get("confusion_matrix")
+    ]
+    if not used:
+        return None, []
+    return np.sum([np.asarray(r["confusion_matrix"]) for r in used], axis=0), used
+
+
+# Backwards-compatible alias. The old name said "mean" and returned a sum.
 def mean_confusion_matrix(
     arm: str, records: list[dict[str, Any]] | None = None
-) -> np.ndarray | None:
-    """Summed confusion matrix over an arm's folds, in canonical order."""
-    records = records if records is not None else cv_records()
-    matrices = [
-        np.asarray(r["confusion_matrix"]) for r in records if r["arm"] == arm and r.get("confusion_matrix")
-    ]
-    if not matrices:
-        return None
-    return np.sum(matrices, axis=0)
+) -> Any:
+    return summed_confusion_matrix(arm, records)[0]
+
+
+def expected_confusion_total(data_cfg: dict[str, Any] | None = None) -> int:
+    """How many predictions a complete confusion matrix must contain.
+
+    Every image of the clean corpus appears in exactly `n_repeats` test
+    partitions, so summing an arm's folds accounts for each image that many
+    times: 668 x 3 = 2004.
+    """
+    data_cfg = data_cfg or load_data_config()
+    n_images = int(data_cfg["clean_corpus"]["expected_total"])
+    n_repeats = int(load_folds_config()["cv"]["n_repeats"])
+    return n_images * n_repeats
+
+
+def check_confusion_total(
+    matrix, arm: str, n_folds: int, data_cfg: dict[str, Any] | None = None
+) -> tuple[int, int, str]:
+    """(total, expected, note). Raises when a COMPLETE arm has the wrong total.
+
+    An arm whose folds are all present must account for every image exactly
+    n_repeats times. If it does not, the matrix is not what it claims to be and
+    reporting it would be wrong, so this raises rather than warns.
+
+    An arm still missing folds cannot reach the expected total, which is not an
+    error -- but the shortfall is returned so it can go in the caption instead of
+    being passed off as complete.
+    """
+    data_cfg = data_cfg or load_data_config()
+    expected = expected_confusion_total(data_cfg)
+    total = int(np.asarray(matrix).sum())
+    n_expected_folds = int(load_folds_config()["cv"]["n_splits"]) * int(
+        load_folds_config()["cv"]["n_repeats"]
+    )
+    if n_folds == n_expected_folds:
+        if total != expected:
+            raise ValueError(
+                "confusion matrix for %r sums to %d predictions over its %d folds, "
+                "expected %d (%d clean images x %d repeats).\n"
+                "  A complete arm must account for every image exactly once per "
+                "repeat; this matrix does not, so it is not the corpus-wide "
+                "matrix it would be reported as."
+                % (arm, total, n_folds, expected, int(data_cfg["clean_corpus"]["expected_total"]),
+                   int(load_folds_config()["cv"]["n_repeats"]))
+            )
+        return total, expected, "summed over all %d folds" % n_folds
+    return (
+        total,
+        expected,
+        "summed over %d of %d folds -- INCOMPLETE (%d of %d predictions)"
+        % (n_folds, n_expected_folds, total, expected),
+    )
 
 
 def write_all(data_cfg: dict[str, Any] | None = None, path: Path | None = None) -> dict[str, Path]:

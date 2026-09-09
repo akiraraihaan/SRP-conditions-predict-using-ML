@@ -174,6 +174,17 @@ baseline_lr_sweep:
 # See artifacts/paired_comparisons.csv, artifacts/pareto_status.csv and
 # MIGRATION_NOTES.md section 17.
 
+# Which arm the paper reports in DETAIL: the confusion matrix and the per-class
+# table. Deliberately NOT "the highest mean F1", which is resnet18 (0.5997 vs
+# 0.5900). That lead is +0.0142 [-0.0343, +0.0627], p=0.58 -- indistinguishable
+# from zero -- and it costs 21.4 MB and 3.65 GFLOPs against 3.0 MB and 0.12.
+# The model the paper recommends is the one the detailed evaluation is of.
+#
+# Script 06 additionally emits a confusion matrix for every non-dominated arm,
+# so both frontier points are available if the manuscript shows both.
+reporting:
+  detailed_arm: mobilenetv3_small
+
 ablation:
   arm: mobilenetv3_small
   # Identical to the arm's 03 runs in every respect except this.

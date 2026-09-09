@@ -50,7 +50,11 @@ COMMITTED = [
     ("artifacts/figures/fig_pareto_size.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_pareto_size.png", "06", "publication figure"),
     ("artifacts/figures/fig_cv_box.pdf", "06", "publication figure"),
-    ("artifacts/figures/fig_confusion_best.pdf", "06", "publication figure"),
+    ("artifacts/figures/fig_confusion_mobilenetv3_small.pdf", "06", "publication figure"),
+    ("artifacts/figures/fig_confusion_resnet18.pdf", "06", "publication figure"),
+    ("artifacts/figures/fig_ablation.pdf", "06", "publication figure"),
+    ("artifacts/figures/fig_class_distribution.pdf", "06", "publication figure"),
+    ("artifacts/figures/fig_cv_macro_f1.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_learning_curve.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_selected_epochs.pdf", "06", "publication figure"),
 ]

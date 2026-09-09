@@ -25,6 +25,22 @@ TWO RULES AGAINST STALE OUTPUT.
    figures get a strip along the bottom and the same text in the PDF metadata,
    so it survives being cropped into a manuscript. A stale artefact announces
    itself -- "built from 1 record" against a registry holding 75.
+
+   The stamp is PER ARTEFACT, not run-wide. A single stamp reused everywhere
+   said "75 records, scripts: 03_run_cv" on the learning-curve and ablation
+   figures, which are built from script 05 and 04 records -- naming runs those
+   figures never saw and omitting the ones they did. Every figure below is
+   stamped with exactly the records that fed it, and
+   `aggregate.assert_provenance_covers` refuses a stamp that disagrees.
+
+WHICH ARM IS REPORTED IN DETAIL
+
+`configs/arms.yaml:reporting.detailed_arm`, never "the highest mean F1" and
+never a hardcoded name. The two are not the same model here: resnet18 has the
+higher mean (0.5997 vs 0.5900) by an amount indistinguishable from zero, at
+seven times the size and thirty times the compute. The confusion matrix and the
+per-class table belong to the model the paper recommends. A matrix is also
+emitted for every non-dominated arm, so both frontier points are available.
 """
 
 from __future__ import annotations
@@ -39,12 +55,24 @@ import pandas as pd  # noqa: E402
 
 from srpcard import aggregate, figures  # noqa: E402
 from srpcard import data as srp_data  # noqa: E402
-from srpcard.config import artifacts_dir, load_data_config  # noqa: E402
+from srpcard.config import artifacts_dir, load_arms_config, load_data_config  # noqa: E402
 from srpcard.registry import load_registry  # noqa: E402
 
 
 def rule(title: str) -> None:
     print("\n" + "=" * 74 + "\n" + title + "\n" + "=" * 74)
+
+
+def stamped(records, *, sources=None):
+    """Install the provenance for the figure about to be drawn, and verify it.
+
+    Every call is checked against the records actually passed, so a figure can
+    never carry a stamp naming runs it did not consume.
+    """
+    block = aggregate.provenance(records, sources=sources)
+    aggregate.assert_provenance_covers(block, records)
+    figures.set_provenance(block)
+    return block
 
 
 def clear_outputs(artifacts: Path, out_dir: Path) -> int:
@@ -81,25 +109,25 @@ def main() -> int:
     args = parser.parse_args()
 
     data_cfg = load_data_config()
+    arms_cfg = load_arms_config()
     out_dir = Path(args.out_dir) if args.out_dir else artifacts_dir(data_cfg) / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rule("06 -- publication figures")
     print("[out] %s" % out_dir)
 
-    # ---- provenance: what everything below is built from ----
+    # ---- provenance is per artefact; this is only the cv baseline ----
     records = aggregate.cv_records()
-    stamp = aggregate.provenance(records)
-    print("[provenance]")
-    for line in aggregate.provenance_lines(stamp):
+    print("[provenance] cross-validation records (03_run_cv)")
+    for line in aggregate.provenance_lines(aggregate.provenance(records)):
         print("    %s" % line)
+    print("    Each figure below is stamped with the records that fed IT, not this.")
     if not records:
         print(
             "\n  NOTE: no 03_run_cv records. Tables and the figures that read them\n"
             "        will be skipped, and anything left from a previous run has\n"
             "        just been cleared rather than left to look current."
         )
-    figures.set_provenance(stamp)
 
     # ---- clear the whole output set BEFORE regenerating ----
     if args.keep_stale:
@@ -122,8 +150,11 @@ def main() -> int:
         print("[table] no 03_run_cv records yet; tables skipped")
 
     # ---- 1. class distribution ----
+    # Built from the image index, not from any run: it gets an explicit source
+    # rather than a record count that would be zero and unexplained.
     try:
         index = srp_data.load_image_index()
+        stamped([], sources=["artifacts/image_index.csv"])
         written += figures.figure_class_distribution(index, data_cfg, out_dir)
         print("[fig] class distribution")
     except Exception as exc:  # noqa: BLE001
@@ -133,6 +164,7 @@ def main() -> int:
 
     # ---- 2. per-arm macro-F1 boxplot ----
     if records:
+        stamped(records)
         written += figures.figure_cv_boxplot(records, out_dir)
         print("[fig] cross-validated macro-F1 by arm")
     else:
@@ -143,6 +175,7 @@ def main() -> int:
     if summary_path.exists():
         summary = pd.read_csv(summary_path, comment="#")
         if summary["gflops_mean"].notna().any():
+            stamped(records, sources=["artifacts/summary_cv.csv"])
             written += figures.figure_pareto(summary, out_dir)
             print("[fig] Pareto frontier (compute)")
         else:
@@ -152,6 +185,7 @@ def main() -> int:
             "size_mb_fp16_mean" if "size_mb_fp16_mean" in summary else "size_mb_mean"
         )
         if size_column in summary and summary[size_column].notna().any():
+            stamped(records, sources=["artifacts/summary_cv.csv"])
             written += figures.figure_pareto_size(summary, out_dir)
             print("[fig] Pareto frontier (size, fp16 weights)")
         else:
@@ -159,26 +193,59 @@ def main() -> int:
     else:
         skipped.append("pareto: artifacts/summary_cv.csv (run scripts/03_run_cv.py)")
 
-    # ---- 4. confusion matrix of the best arm ----
+    # ---- 4. confusion matrices ----
+    #
+    # The DETAILED arm comes from configs/arms.yaml:reporting.detailed_arm, not
+    # from argmax of mean F1 -- those are different models here, and the paper's
+    # detailed evaluation is of the one it recommends. Every non-dominated arm
+    # gets one too, so both frontier points are available.
     if records:
-        summary = aggregate.summarise_cv(records, data_cfg)
-        best_arm = summary.iloc[0]["arm"]
-        matrix = aggregate.mean_confusion_matrix(best_arm, records)
-        if matrix is not None:
-            written += figures.figure_confusion(
-                matrix,
-                list(data_cfg["classes"]),
-                out_dir,
-                "fig_confusion_%s" % best_arm,
-                "Confusion matrix, %s, summed over 15 folds" % best_arm,
+        detailed_arm = (arms_cfg.get("reporting") or {}).get("detailed_arm")
+        if not detailed_arm:
+            skipped.append(
+                "confusion matrices: configs/arms.yaml has no reporting.detailed_arm"
             )
-            print("[fig] confusion matrix (%s)" % best_arm)
+        else:
+            frontier = []
+            pareto = aggregate.pareto_status(records)
+            if not pareto.empty:
+                frontier = pareto.loc[
+                    pareto["on_pareto_frontier"], "arm"
+                ].tolist()
+            wanted = [detailed_arm] + [a for a in frontier if a != detailed_arm]
+
+            for arm in wanted:
+                matrix, used = aggregate.summed_confusion_matrix(arm, records)
+                if matrix is None:
+                    skipped.append("confusion matrix (%s): no records" % arm)
+                    continue
+                total, expected, note = aggregate.check_confusion_total(
+                    matrix, arm, len(used), data_cfg
+                )
+                role = "detailed" if arm == detailed_arm else "frontier"
+                stamped(used)
+                written += figures.figure_confusion(
+                    matrix,
+                    list(data_cfg["classes"]),
+                    out_dir,
+                    # the arm is in the FILENAME: a confusion matrix that could
+                    # be mistaken for another model's is worse than none
+                    "fig_confusion_%s" % arm,
+                    "Confusion matrix, %s (%s) -- %d predictions %s"
+                    % (arm, role, total, note),
+                )
+                print(
+                    "[fig] confusion matrix (%s, %s): %d predictions, %s"
+                    % (arm, role, total, note)
+                )
 
     # ---- 5. learning curve ----
     lc_path = artifacts_dir(data_cfg) / "learning_curve.csv"
     if lc_path.exists():
+        lc_records = aggregate.records_for_script("05_learning_curve")
+        stamped(lc_records, sources=["artifacts/learning_curve.csv"])
         written += figures.figure_learning_curve(pd.read_csv(lc_path, comment="#"), out_dir)
-        print("[fig] learning curve")
+        print("[fig] learning curve (%d records from 05)" % len(lc_records))
     else:
         skipped.append("learning curve: artifacts/learning_curve.csv (run scripts/05_learning_curve.py)")
 
@@ -186,12 +253,17 @@ def main() -> int:
     paired_path = artifacts_dir(data_cfg) / "ablation_paired.csv"
     per_class_path = artifacts_dir(data_cfg) / "ablation_per_class.csv"
     if paired_path.exists() and per_class_path.exists():
+        ablation_records = aggregate.records_for_script("04_run_ablation")
+        stamped(
+            ablation_records,
+            sources=["artifacts/ablation_paired.csv", "artifacts/ablation_per_class.csv"],
+        )
         written += figures.figure_ablation(
             pd.read_csv(paired_path, comment="#"),
             pd.read_csv(per_class_path, comment="#"),
             out_dir,
         )
-        print("[fig] class-weight ablation")
+        print("[fig] class-weight ablation (%d records from 04)" % len(ablation_records))
     else:
         skipped.append(
             "ablation: artifacts/ablation_paired.csv + ablation_per_class.csv "
@@ -203,6 +275,7 @@ def main() -> int:
     if epochs_path.exists():
         epochs = pd.read_csv(epochs_path, comment="#")
         if not epochs.empty:
+            stamped(records, sources=["artifacts/selected_epochs.csv"])
             written += figures.figure_selected_epochs(epochs, out_dir)
             print("[fig] selected-epoch distribution")
     else:
