@@ -1,3 +1,16 @@
+# artifacts/resolved_arms.yaml -- GENERATED SNAPSHOT. Do not edit by hand.
+#
+# Written by  : 02_lr_sweep_baselines
+# At          : 2026-09-04T03:17:35+00:00
+# Git commit  : 928531357eadafc1cc302752413df634f00b72df-dirty
+#
+# A full snapshot of configs/arms.yaml as it stood after the resolving script
+# wrote its results back. configs/arms.yaml lives in the clone and dies with
+# the session; artifacts/ is the Drive symlink, so this copy survives.
+#
+# Restore it over configs/arms.yaml in a fresh clone with:
+#     python scripts/restore_arms.py
+#
 # ==== BEGIN VERBATIM COPY OF configs/arms.yaml ====
 # Experiment arms.
 #
