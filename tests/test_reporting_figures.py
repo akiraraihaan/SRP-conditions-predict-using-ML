@@ -234,3 +234,147 @@ def test_per_class_support_matches_the_corpus():
     complete = frame[frame["n_folds"] == 15]
     for row in complete.to_dict("records"):
         assert row["support_total"] == row["n_clean"] * repeats, row["class"]
+
+
+# ---------------------------------------------------------------- publication mode
+
+
+@pytest.fixture
+def restore_render():
+    from srpcard import figures
+
+    before = figures.RENDER_PROVENANCE
+    yield
+    figures.set_render_provenance(before)
+
+
+BLOCK = {
+    "n_records": 15, "arms": ["a"], "scripts": ["03_run_cv"], "sources": [],
+    "corpus_fingerprint": "abc", "registry_sha1": "def",
+    "generated_at": "2026-01-01T00:00:00+00:00",
+}
+
+
+def test_the_strip_is_drawn_by_default(restore_render):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from srpcard import figures
+
+    figures.set_provenance(BLOCK)
+    figures.set_render_provenance(True)
+    fig, _ = plt.subplots()
+    figures._stamp(fig)
+    try:
+        assert len(fig.texts) == 1
+        assert "03_run_cv" in fig.texts[0].get_text()
+    finally:
+        plt.close(fig)
+
+
+def test_publication_mode_omits_the_strip(restore_render):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from srpcard import figures
+
+    figures.set_provenance(BLOCK)
+    figures.set_render_provenance(False)
+    fig, _ = plt.subplots()
+    figures._stamp(fig)
+    try:
+        assert fig.texts == []
+    finally:
+        plt.close(fig)
+
+
+def test_publication_mode_still_writes_the_metadata(tmp_path, restore_render):
+    """The point of the flag: the strip goes, the provenance does not."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from srpcard import figures
+
+    figures.set_provenance(BLOCK)
+    figures.set_render_provenance(False)
+    fig, _ = plt.subplots()
+    written = figures.save(fig, tmp_path, "fig_x")
+    plt.close(fig)
+
+    pdf = next(p for p in written if p.suffix == ".pdf")
+    assert b"03_run_cv" in pdf.read_bytes(), "PDF metadata lost the script list"
+
+    png = next(p for p in written if p.suffix == ".png")
+    raw = png.read_bytes()
+    comment, i = None, 8
+    while i < len(raw) - 8:
+        length = int.from_bytes(raw[i:i + 4], "big")
+        kind = raw[i + 4:i + 8]
+        if kind == b"tEXt":
+            key, _, value = raw[i + 8:i + 8 + length].partition(b"\x00")
+            if key == b"Comment":
+                comment = value.decode("latin-1")
+        i += 12 + length
+    assert comment and "03_run_cv" in comment, "PNG metadata lost the script list"
+
+
+def test_publication_figures_go_to_their_own_directory():
+    source = (REPO_ROOT / "scripts" / "06_export_figures.py").read_text(encoding="utf-8")
+    assert '"figures_pub" if args.for_publication else "figures"' in source
+
+
+def test_publication_mode_does_not_rewrite_the_tables():
+    """The default set's tables are inputs here; rewriting them would let the two
+    modes overwrite each other's work."""
+    source = (REPO_ROOT / "scripts" / "06_export_figures.py").read_text(encoding="utf-8")
+    assert "clear_tables=not args.for_publication" in source
+    assert "if args.for_publication:\n        print(\"[table] not rewritten" in source
+
+
+def test_clear_outputs_can_spare_the_tables(script06, artifacts):
+    figures_dir = artifacts / "figures_pub"
+    figures_dir.mkdir()
+    (figures_dir / "fig_pareto.pdf").write_text("stale", encoding="utf-8")
+    for name in aggregate.TABLE_NAMES:
+        (artifacts / name).write_text("keep", encoding="utf-8")
+
+    removed = script06.clear_outputs(artifacts, figures_dir, clear_tables=False)
+
+    assert removed == 1
+    for name in aggregate.TABLE_NAMES:
+        assert (artifacts / name).exists(), "%s was cleared in publication mode" % name
+
+
+# ---------------------------------------------------------------- decoupling
+
+
+def test_script06_needs_no_torch_and_no_dataset():
+    """It must run on a laptop with no GPU and no copy of the images."""
+    import subprocess
+
+    probe = (
+        "import sys, os, runpy\n"
+        "sys.path.insert(0, 'src')\n"
+        "os.environ['SRPCARD_DATA_ROOT'] = '/nonexistent-on-purpose'\n"
+        "sys.argv = ['06']\n"
+        "try:\n"
+        "    runpy.run_path('scripts/06_export_figures.py', run_name='__main__')\n"
+        "except SystemExit as exc:\n"
+        "    assert not exc.code, exc.code\n"
+        "heavy = sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'torch','torchvision','ultralytics','cv2','thop'})\n"
+        "print('HEAVY:' + ','.join(heavy))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], cwd=REPO_ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    line = next(l for l in result.stdout.splitlines() if l.startswith("HEAVY:"))
+    assert line == "HEAVY:", "script 06 pulled in %s" % line
+
+
+def test_script06_reads_only_artifacts_and_configs():
+    source = (REPO_ROOT / "scripts" / "06_export_figures.py").read_text(encoding="utf-8")
+    assert "resolve_data_root" not in source, "06 must not resolve DATA_ROOT"
+    for module in ("torch", "ultralytics", "torchvision"):
+        assert "import %s" % module not in source

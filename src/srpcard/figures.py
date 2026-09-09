@@ -45,6 +45,12 @@ def _style() -> None:
 # to be noticed. None means "no stamp", which is what a caller outside 06 gets.
 PROVENANCE: dict | None = None
 
+# Whether the stamp is DRAWN on the figure. It is always written into the file's
+# metadata; this only controls the visible strip. A typeset manuscript does not
+# want the strip, but a figure with no provenance at all cannot be identified
+# later -- so the two are separated rather than one being traded for the other.
+RENDER_PROVENANCE: bool = True
+
 
 def set_provenance(block: dict | None) -> None:
     """Install the stamp every subsequent save() applies."""
@@ -52,9 +58,15 @@ def set_provenance(block: dict | None) -> None:
     PROVENANCE = block
 
 
+def set_render_provenance(enabled: bool) -> None:
+    """Draw the provenance strip on the figure, or keep it to the metadata only."""
+    global RENDER_PROVENANCE
+    RENDER_PROVENANCE = bool(enabled)
+
+
 def _stamp(fig) -> None:
     """Draw the provenance strip along the bottom of the figure."""
-    if not PROVENANCE:
+    if not PROVENANCE or not RENDER_PROVENANCE:
         return
     from .aggregate import provenance_caption
 
@@ -73,7 +85,9 @@ def save(fig, out_dir: Path, name: str) -> list[Path]:
     """Write `name`.pdf and `name`.png, both carrying the provenance stamp.
 
     The stamp goes in two places: a small strip along the bottom of the image,
-    and the PDF's own metadata, so it survives being cropped into a manuscript.
+    and the file's own metadata, so it survives being cropped into a manuscript.
+    `set_render_provenance(False)` drops the visible strip and keeps the
+    metadata, which is what `--for-publication` does.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     _stamp(fig)
@@ -96,11 +110,25 @@ def save(fig, out_dir: Path, name: str) -> list[Path]:
                 PROVENANCE["registry_sha1"],
             ),
         }
+    # PNG carries the same text, under the keys the PNG spec allows, so a
+    # publication figure is identifiable in either format.
+    png_metadata = (
+        {
+            "Title": metadata["Title"],
+            "Description": metadata["Subject"],
+            "Comment": metadata["Keywords"],
+            "Software": metadata["Creator"],
+        }
+        if metadata
+        else {}
+    )
+
     written = []
     for suffix in ("pdf", "png"):
         target = out_dir / ("%s.%s" % (name, suffix))
-        if suffix == "pdf" and metadata:
-            fig.savefig(target, format=suffix, metadata=metadata)
+        chosen = metadata if suffix == "pdf" else png_metadata
+        if chosen:
+            fig.savefig(target, format=suffix, metadata=chosen)
         else:
             fig.savefig(target, format=suffix)
         written.append(target)

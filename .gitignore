@@ -104,7 +104,11 @@ artifacts/*
 
 # publication figures. `artifacts/*` matches the directory but not its contents,
 # so un-ignoring the directory is enough to let git descend into it.
+# BOTH sets are kept: figures/ carries the provenance strip and is what catches a
+# stale file; figures_pub/ is the same figures without the strip, for typesetting,
+# with the provenance in the file metadata instead.
 !artifacts/figures/
+!artifacts/figures_pub/
 
 # NOT committed, deliberately: registry backups written by backfill_efficiency.py
 artifacts/*.bak

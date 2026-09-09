@@ -57,6 +57,9 @@ COMMITTED = [
     ("artifacts/figures/fig_cv_macro_f1.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_learning_curve.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_selected_epochs.pdf", "06", "publication figure"),
+    ("artifacts/figures_pub/fig_confusion_mobilenetv3_small.pdf", "06", "typesetting set"),
+    ("artifacts/figures_pub/fig_pareto.pdf", "06", "typesetting set"),
+    ("artifacts/figures_pub/fig_pareto.png", "06", "typesetting set"),
 ]
 
 # Written under artifacts/ but deliberately NOT committed.
@@ -118,7 +121,7 @@ def test_every_artefact_the_scripts_write_is_listed_here():
     import re
 
     known = {Path(p).name for p, _, _ in COMMITTED + IGNORED}
-    known |= {"figures"}  # the directory itself, covered by the figure entries
+    known |= {"figures", "figures_pub"}  # directories, covered by the figure entries
 
     pattern = re.compile(r'artifacts_dir\([^)]*\)\s*/\s*"([^"]+)"')
     found: set[str] = set()

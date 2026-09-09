@@ -509,6 +509,36 @@ fig_confusion_*.pdf      records=15 scripts=03_run_cv arms=<that arm>
 fig_class_distribution   records=0  scripts=none sources=artifacts/image_index.csv
 ```
 
+### Two figure sets, kept side by side
+
+```bash
+python scripts/06_export_figures.py                    # artifacts/figures/
+python scripts/06_export_figures.py --for-publication  # artifacts/figures_pub/
+```
+
+The provenance strip is what stops a stale figure passing unnoticed, and it is
+clutter in a typeset manuscript. So it is **moved, not removed**:
+`--for-publication` omits the drawn strip and writes the same string into the
+**PDF and PNG metadata**, so provenance still travels with the file and a stale
+one is still identifiable. Both sets are committed; neither can be mistaken for
+the other, because they are in different directories.
+
+Publication mode reads the tables rather than rewriting them, and clears only
+`figures_pub/`, so the two modes cannot overwrite each other's work.
+
+`fig_class_distribution` and `fig_confusion_resnet18` stay in both sets even
+though the manuscript may use neither: which figures a paper prints is not the
+repository's concern, and dropping them would make the two sets disagree about
+what was produced.
+
+### Script 06 runs without a GPU or the dataset
+
+It reads only `artifacts/` and `configs/` -- verified by tracing every file it
+opens -- imports none of torch, torchvision, ultralytics, cv2 or thop, and never
+resolves `DATA_ROOT`. A test asserts all three by running it in a subprocess with
+`SRPCARD_DATA_ROOT` pointed at a nonexistent path and inspecting `sys.modules`
+afterwards, so a future import cannot silently couple it to a training machine.
+
 `summary_per_class.csv` now carries `precision`/`recall`/`f1` mean and sd across
 folds plus `support_total` and `support_mean`, so the manuscript's per-class table
 needs no recomputation. `support_total` is the class's clean count times 3.
@@ -762,7 +792,7 @@ pip install pytest
 python -m pytest
 ```
 
-159 tests, ~76 s, no GPU and no dataset needed. They cover the registry schema
+174 tests, ~38 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

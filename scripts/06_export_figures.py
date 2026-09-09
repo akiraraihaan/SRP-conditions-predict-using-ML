@@ -2,7 +2,11 @@
 """06 -- export every publication figure. Vector PDF plus high-resolution PNG.
 
     python scripts/06_export_figures.py
+    python scripts/06_export_figures.py --for-publication
     python scripts/06_export_figures.py --out-dir artifacts/figures
+
+Needs only artifacts/ and configs/. It imports no torch and never resolves
+DATA_ROOT, so it runs on a laptop with no GPU and no copy of the dataset.
 
 Matplotlib only; seaborn is not a dependency of this repository.
 
@@ -75,7 +79,7 @@ def stamped(records, *, sources=None):
     return block
 
 
-def clear_outputs(artifacts: Path, out_dir: Path) -> int:
+def clear_outputs(artifacts: Path, out_dir: Path, *, clear_tables: bool = True) -> int:
     """Delete everything this script generates, before regenerating any of it.
 
     Scoped deliberately: the three tables aggregate.write_all() produces, and the
@@ -84,11 +88,12 @@ def clear_outputs(artifacts: Path, out_dir: Path) -> int:
     remove.
     """
     removed = 0
-    for name in aggregate.TABLE_NAMES:
-        target = artifacts / name
-        if target.exists():
-            target.unlink()
-            removed += 1
+    if clear_tables:
+        for name in aggregate.TABLE_NAMES:
+            target = artifacts / name
+            if target.exists():
+                target.unlink()
+                removed += 1
     if out_dir.exists():
         for target in sorted(out_dir.iterdir()):
             if target.is_file() and target.suffix.lower() in {".pdf", ".png"}:
@@ -99,7 +104,21 @@ def clear_outputs(artifacts: Path, out_dir: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", default=None, help="default: artifacts/figures")
+    parser.add_argument(
+        "--out-dir", default=None,
+        help="default: artifacts/figures, or artifacts/figures_pub with "
+             "--for-publication",
+    )
+    parser.add_argument(
+        "--for-publication",
+        action="store_true",
+        help=(
+            "omit the provenance strip from the rendered figure, keeping the same "
+            "text in the file metadata, and write to artifacts/figures_pub/. The "
+            "tables are read, not rewritten, so the two figure sets cannot drift "
+            "or overwrite each other."
+        ),
+    )
     parser.add_argument(
         "--keep-stale",
         action="store_true",
@@ -110,11 +129,20 @@ def main() -> int:
 
     data_cfg = load_data_config()
     arms_cfg = load_arms_config()
-    out_dir = Path(args.out_dir) if args.out_dir else artifacts_dir(data_cfg) / "figures"
+    default_dir = "figures_pub" if args.for_publication else "figures"
+    out_dir = Path(args.out_dir) if args.out_dir else artifacts_dir(data_cfg) / default_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    figures.set_render_provenance(not args.for_publication)
 
     rule("06 -- publication figures")
     print("[out] %s" % out_dir)
+    if args.for_publication:
+        print(
+            "[mode] --for-publication: no provenance strip on the figure; the same\n"
+            "       text still goes into the PDF and PNG metadata, so a stale file\n"
+            "       is still identifiable. Tables are read, not rewritten."
+        )
 
     # ---- provenance is per artefact; this is only the cv baseline ----
     records = aggregate.cv_records()
@@ -133,7 +161,11 @@ def main() -> int:
     if args.keep_stale:
         print("\n[clear] skipped -- --keep-stale")
     else:
-        removed = clear_outputs(artifacts_dir(data_cfg), out_dir)
+        # In publication mode only this figure directory is cleared: the tables
+        # and the default figure set belong to the other mode and are inputs here.
+        removed = clear_outputs(
+            artifacts_dir(data_cfg), out_dir, clear_tables=not args.for_publication
+        )
         print(
             "\n[clear] removed %d previously generated file(s); a partial run below\n"
             "        leaves fewer files, never a mix of fresh and stale ones" % removed
@@ -143,11 +175,14 @@ def main() -> int:
     skipped: list[str] = []
 
     # ---- tables first: the figures read them ----
-    tables = aggregate.write_all(data_cfg)
-    for name, path in tables.items():
-        print("[table] %s -> %s" % (name, path.name))
-    if not tables:
-        print("[table] no 03_run_cv records yet; tables skipped")
+    if args.for_publication:
+        print("[table] not rewritten in --for-publication; read as inputs")
+    else:
+        tables = aggregate.write_all(data_cfg)
+        for name, path in tables.items():
+            print("[table] %s -> %s" % (name, path.name))
+        if not tables:
+            print("[table] no 03_run_cv records yet; tables skipped")
 
     # ---- 1. class distribution ----
     # Built from the image index, not from any run: it gets an explicit source
@@ -282,8 +317,10 @@ def main() -> int:
         skipped.append("selected epochs: artifacts/selected_epochs.csv (run scripts/03_run_cv.py)")
 
     rule("DONE")
-    print("[figures] wrote %d file(s) (%d figures, PDF + PNG each)"
-          % (len(written), len(written) // 2))
+    print("[figures] wrote %d file(s) (%d figures, PDF + PNG each) to %s"
+          % (len(written), len(written) // 2, out_dir.name))
+    if args.for_publication:
+        print("          no provenance strip drawn; it is in the file metadata")
     for path in written:
         print("    %s" % path.name)
     if skipped:
