@@ -10,7 +10,7 @@
 # scripts: 03_run_cv
 # corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
 # registry sha1: 5540888815d618d6
-# generated: 2026-09-10T02:26:18+00:00
+# generated: 2026-09-10T03:13:50+00:00
 arm,n_folds,f1_macro_mean,params,gflops,size_mb_fp16,on_pareto_frontier,dominated_by,dominated_on,n_dominators
 resnet18,15,0.601989,11181642,3.647053824,21.377,True,,,0
 mobilenetv3_small,15,0.590005,1528106,0.122928368,3.004,True,,,0

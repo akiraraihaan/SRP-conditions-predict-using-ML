@@ -509,6 +509,28 @@ fig_confusion_*.pdf      records=15 scripts=03_run_cv arms=<that arm>
 fig_class_distribution   records=0  scripts=none sources=artifacts/image_index.csv
 ```
 
+### Artefacts are rewritten only when their content changes
+
+Every artefact carries a `generated:` timestamp, so stamping unconditionally made
+every re-export rewrite every table and figure -- 23 files changed by a run that
+changed nothing. That is review noise the stamp was not buying anything for.
+
+Tables are now compared body-to-body and left alone when the data is identical;
+figures carry a `content=<sha>` in their metadata and are skipped when it matches.
+The key covers the records, any source table's body, **and the source of
+`figures.py`**, so changing how a figure is plotted invalidates it too -- which a
+hash of the data alone would miss.
+
+Nothing is deleted up front any more, because deleting first defeats the check.
+Output the run did not produce is **pruned afterwards** instead. The guarantee
+that survives is the one that mattered: the directory never keeps output from a
+previous configuration. The one that does not is that an interrupted run leaves
+nothing behind -- it leaves the previous files, which carry their own stamp naming
+the record count, corpus and registry they came from, and that is what identifies
+them as stale. The timestamp was never the part doing the work.
+
+An identical re-run of script 06 now changes **0 of 54** artefacts.
+
 ### Two figure sets, kept side by side
 
 ```bash
@@ -569,6 +591,12 @@ when it is left at `unknown`. The `device` block -- CPU, cores, OS, kernel,
 python, torch, threads, governor, cooling, iteration counts, timestamp -- is
 top-level in `edge_benchmark.json` and printed.
 
+The letterbox cost is reported in **absolute milliseconds and as a share**. The
+share is a property of the host -- on a slower CPU the forward pass grows more
+than a file read and a resize, so the same model shows a smaller share on a Pi
+than on a workstation. Quote the milliseconds across devices; quote the share
+only from the Pi run, next to the device block.
+
 `artifacts/pareto_status_device.csv` recomputes dominance over registry macro-F1,
 params, **measured median latency** and INT8 size, and reports whether the
 frontier matches the GFLOPs one. **It refuses to compare the two when only a
@@ -578,9 +606,37 @@ arm set rather than by the cost axis.
 ### Checkpoints
 
 Scripts 03-05 do not persist weights -- `train_fold` returns `best_state` in
-memory and the run records only metrics. `03_run_cv.py --save-weights DIR` keeps
-the best fold per arm, and 07 **refuses to run** without a checkpoint for every
-arm it was asked for. That refusal matters: latency, memory and INT8 size are
+memory and the run records only metrics.
+
+**`--save-weights` alone cannot fix that once the runs are complete.** Weights are
+not part of the `run_id`, so every fold is already in the registry, every fold is
+skipped, and the plan prints `already complete (skipped), 0 remaining` and exits
+successfully having written nothing.
+
+So there are two modes:
+
+```bash
+python scripts/03_run_cv.py --save-weights DIR     # writes as runs EXECUTE
+python scripts/03_run_cv.py --emit-weights DIR     # REPRODUCES completed runs
+```
+
+`--emit-weights` re-runs the benchmark fold, **appends nothing to the registry** --
+the run already happened and its record stands -- and checks the reproduced
+metrics against the recorded ones. `run_seed` and `val_seed` are pure functions of
+`(repeat, fold)`, so a divergence beyond `--reproduce-tolerance` (default 1e-6)
+aborts, printing both values, the difference, and the recorded versus current
+device. Different hardware explains a small difference and is not a
+reproducibility failure; the same machine diverging is, and no checkpoint should
+be shipped from it because it would not correspond to the published metrics.
+
+**The fold is fixed, not the best.** `configs/arms.yaml:reporting.benchmark_fold`
+is repeat 0, fold 0 for every arm -- one pre-declared choice, identical across
+architectures, no test-set information involved. Selecting "the fold with the
+highest test macro-F1" would be the circularity this project spent weeks
+removing: harmless for latency, which the architecture decides, but it would
+contaminate the INT8 accuracy delta.
+
+07 **refuses to run** without a checkpoint for every arm it was asked for. That refusal matters: latency, memory and INT8 size are
 decided by the architecture and would look entirely plausible from an untrained
 model, while the INT8 accuracy delta would be noise, and nothing in the output
 would show which.

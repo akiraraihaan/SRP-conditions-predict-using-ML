@@ -19,6 +19,7 @@ a mean across folds would hide most effectively.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -363,10 +364,38 @@ def provenance(
         "arms": sorted({r.get("arm") for r in records} - {None}),
         "scripts": sorted({r.get("script") for r in records} - {None}),
         "sources": sorted(sources or []),
+        "content_sha1": content_key(records, sources),
         "corpus_fingerprint": fingerprints[0] if len(fingerprints) == 1 else fingerprints,
         "registry_sha1": digest,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def content_key(records: list[dict[str, Any]], sources: list[str] | None = None) -> str:
+    """A hash of everything a figure is drawn from.
+
+    Covers the records (by run_id and their reported values), the body of any
+    source table, and the source of figures.py itself -- so a change to how a
+    figure is PLOTTED invalidates it too, which a hash of the data alone would
+    miss.
+    """
+    digest = hashlib.sha1()  # noqa: S324 - change detection, not security
+    for record in sorted(records, key=lambda r: str(r.get("run_id"))):
+        digest.update(
+            json.dumps(
+                {k: v for k, v in sorted(record.items()) if k not in {"timestamp"}},
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        )
+    for name in sorted(sources or []):
+        path = Path(name)
+        if path.exists():
+            digest.update(csv_body(path).encode("utf-8"))
+    figures_source = Path(__file__).with_name("figures.py")
+    if figures_source.exists():
+        digest.update(figures_source.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def assert_provenance_covers(block: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -432,6 +461,17 @@ def provenance_caption(block: dict[str, Any]) -> str:
     )
 
 
+def csv_body(path: Path) -> str:
+    """A stamped CSV with its `#` header removed: the data, without provenance."""
+    if not Path(path).exists():
+        return ""
+    return "".join(
+        line
+        for line in Path(path).read_text(encoding="utf-8").splitlines(keepends=True)
+        if not line.startswith("#")
+    )
+
+
 def write_csv_with_provenance(
     frame: pd.DataFrame,
     target: Path,
@@ -447,11 +487,18 @@ def write_csv_with_provenance(
     if extra_header:
         lines = list(extra_header) + [""] + lines
     header = "".join(("# %s\n" % line).replace("# \n", "#\n") for line in lines)
-    target.write_text(
-        header + frame.to_csv(index=False, lineterminator="\n"),
-        encoding="utf-8",
-        newline="\n",
-    )
+    body = frame.to_csv(index=False, lineterminator="\n")
+
+    # Only rewrite when the DATA changed. The provenance timestamp moves on every
+    # run, so stamping unconditionally made every re-export rewrite every table
+    # and figure -- pure review noise, and it costs more than it earns. A stale
+    # artefact is still detectable without it: the record count, the corpus
+    # fingerprint and the registry sha1 are all in the stamp, and those are the
+    # parts that were ever doing the work.
+    if csv_body(target) == body:
+        return target
+
+    target.write_text(header + body, encoding="utf-8", newline="\n")
     return target
 
 

@@ -26,7 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from srpcard import data as srp_data  # noqa: E402
 from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
-from srpcard.config import artifacts_dir, load_arms_config, load_data_config, resolve_data_root  # noqa: E402
+from srpcard.config import (  # noqa: E402
+    artifacts_dir,
+    hardware,
+    library_versions,
+    load_arms_config,
+    load_data_config,
+    resolve_data_root,
+)
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import ARM_NAMES, add_fallback_argument, build_model  # noqa: E402
 from srpcard.train import (  # noqa: E402
@@ -40,16 +47,25 @@ from srpcard.train import (  # noqa: E402
 SCRIPT = "03_run_cv"
 
 
-def save_best_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> None:
-    """Keep the best fold's weights per arm, for the edge benchmark.
+def benchmark_fold(arms_cfg) -> tuple[int, int]:
+    """The ONE fold whose weights are kept, from configs/arms.yaml.
 
-    Deliberately not one file per fold: 75 checkpoints are large, the reported
-    metrics come from the registry rather than from weights, and 07 benchmarks
-    one model per arm. The fold kept is the one with the highest TEST macro-F1,
-    which is a reporting choice and is recorded in the sidecar so the benchmark
-    can say which fold it measured.
+    Fixed and pre-declared, identical across architectures, rather than "the
+    fold with the highest test macro-F1". Selecting on test data is the exact
+    circularity this project spent weeks removing: it is harmless for latency,
+    which the architecture decides, but it contaminates the INT8 accuracy delta
+    and cannot be described in a methods section without a caveat.
+    """
+    block = (arms_cfg.get("reporting") or {}).get("benchmark_fold") or {}
+    return int(block.get("repeat", 0)), int(block.get("fold", 0))
 
-    The file is the {'arm', 'state_dict'} form 07's loader documents.
+
+def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> None:
+    """Write the benchmark fold's weights for one arm.
+
+    No comparison against what is already there: the fold is fixed, so there is
+    nothing to choose between. The file is the {'arm', 'state_dict'} form 07's
+    loader documents.
     """
     import json
 
@@ -57,14 +73,6 @@ def save_best_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> N
 
     out_dir.mkdir(parents=True, exist_ok=True)
     sidecar = out_dir / ("%s.json" % spec["arm"])
-    if sidecar.exists():
-        try:
-            previous = json.loads(sidecar.read_text(encoding="utf-8"))
-            if float(previous.get("f1_macro", -1)) >= f1_macro:
-                return
-        except Exception:  # noqa: BLE001 - a damaged sidecar is replaced
-            pass
-
     target = out_dir / ("%s.pt" % spec["arm"])
     torch.save(
         {
@@ -88,14 +96,117 @@ def save_best_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> N
                 "fold": spec["fold"],
                 "f1_macro": f1_macro,
                 "weights": target.name,
+                "selection": (
+                    "fixed benchmark fold from configs/arms.yaml:"
+                    "reporting.benchmark_fold -- not chosen on test performance"
+                ),
             },
             indent=2,
         ),
         encoding="utf-8",
         newline="\n",
     )
-    print("  [weights] kept r%df%d as the best %s so far (f1 %.4f) -> %s"
-          % (spec["repeat"], spec["fold"], spec["arm"], f1_macro, target))
+    print("  [weights] %s r%df%d (f1 %.4f) -> %s"
+          % (spec["arm"], spec["repeat"], spec["fold"], f1_macro, target))
+
+
+VERIFIED_METRICS = ("f1_macro", "accuracy", "precision_macro", "recall_macro")
+
+
+def emit_weights_for_completed(out_dir, specs, *, tolerance, arms_cfg, data_cfg,
+                               index, cache, device, quiet, allow_fallback) -> int:
+    """Re-run already-completed benchmark-fold runs purely to write their weights.
+
+    --save-weights cannot do this. Weights are not part of the run_id, so once a
+    run is in the registry it is skipped and no file is ever written: the plan
+    prints "already complete (skipped), 0 remaining" and exits successfully
+    having done nothing at all.
+
+    Nothing is appended to the registry here -- the run already happened and its
+    record stands. What IS checked is that the reproduction lands on the recorded
+    numbers. run_seed and val_seed are pure functions of (repeat, fold), so a
+    divergence means the run is not reproducible, which is worth knowing on its
+    own and is a reason to stop rather than to ship a checkpoint that does not
+    correspond to the published metrics.
+    """
+    from srpcard import evaluate
+    from srpcard.train import TrainConfig, labels_by_idx_map
+
+    recorded = {r.get("run_id"): r for r in registry.load_registry()}
+    wanted = [spec for spec in specs if spec["run_id"] in recorded]
+    for spec in specs:
+        if spec["run_id"] not in recorded:
+            print("  [skip] %s r%df%d is not in the registry -- run it normally "
+                  "with --save-weights" % (spec["arm"], spec["repeat"], spec["fold"]))
+    if not wanted:
+        print("  nothing to reproduce")
+        return 0
+
+    labels_by_idx = labels_by_idx_map(index, data_cfg)
+    written = 0
+    for position, spec in enumerate(wanted, 1):
+        entry = spec["_entry"]
+        record = recorded[spec["run_id"]]
+        rule("reproduce %d/%d  %s  r%df%d  (run_id %s)"
+             % (position, len(wanted), spec["arm"], spec["repeat"], spec["fold"],
+                spec["run_id"]))
+        bundle = build_model(spec["arm"], arms_cfg, data_cfg, with_efficiency=False,
+                             seed=spec["run_seed"],
+                             allow_pretrained_fallback=allow_fallback)
+        cfg = TrainConfig.from_arm(spec["arm"], arms_cfg, epochs=spec["epochs"],
+                                   class_weights=spec["class_weights"])
+        started = time.perf_counter()
+        result = train_fold(bundle, cache, entry["train_idx"], entry["val_idx"],
+                            labels_by_idx, cfg, seed=spec["run_seed"],
+                            device=device, verbose=not quiet)
+        metrics = evaluate.evaluate_fold(bundle.module, cache, entry["test_idx"],
+                                         labels_by_idx, data_cfg)
+        elapsed = time.perf_counter() - started
+
+        drift = []
+        for field in VERIFIED_METRICS:
+            was, now = record.get(field), metrics.get(field)
+            if was is None or now is None:
+                continue
+            if abs(float(was) - float(now)) > tolerance:
+                drift.append((field, float(was), float(now)))
+
+        print("  recorded f1_macro %.6f   reproduced %.6f   (%.1fs)"
+              % (record.get("f1_macro", float("nan")), metrics["f1_macro"], elapsed))
+        if drift:
+            here = hardware()
+            lines = [
+                "REPRODUCTION MISMATCH for %s r%df%d (run_id %s)."
+                % (spec["arm"], spec["repeat"], spec["fold"], spec["run_id"]),
+                "",
+                "  %-18s %18s %18s %13s" % ("metric", "recorded", "reproduced", "difference"),
+            ]
+            for field, was, now in drift:
+                lines.append("  %-18s %18.9f %18.9f %13.2e"
+                             % (field, was, now, abs(was - now)))
+            lines += [
+                "",
+                "  run_seed and val_seed are pure functions of (repeat, fold), so the",
+                "  same fold under the same code on the same hardware reproduces exactly.",
+                "",
+                "  recorded on : %s, torch %s"
+                % (record.get("gpu") or record.get("device_kind"),
+                   (record.get("library_versions") or {}).get("torch")),
+                "  running on  : %s, torch %s"
+                % (here.get("gpu") or here.get("device_kind"),
+                   library_versions().get("torch")),
+                "",
+                "  Different hardware or a different torch build explains a small",
+                "  difference and is not a reproducibility failure -- re-run with a",
+                "  larger --reproduce-tolerance if that is the case. The SAME machine",
+                "  diverging is a real problem, and no checkpoint should be shipped",
+                "  from it: it would not correspond to the published metrics.",
+            ]
+            raise SystemExit("\n".join(lines))
+
+        save_fold_weights(out_dir, spec, bundle, result, metrics["f1_macro"])
+        written += 1
+    return written
 
 
 def rule(title: str) -> None:
@@ -117,10 +228,33 @@ def main() -> int:
         default=None,
         metavar="DIR",
         help=(
-            "also write each arm's best fold weights to DIR/<arm>.pt, for "
-            "scripts/07_bench_edge.py. Off by default: 75 checkpoints are large "
-            "and none of the reported metrics need them. Only the best fold per "
-            "arm is kept, and only if it beats what is already there."
+            "when a run is EXECUTED, also write the benchmark fold's weights to "
+            "DIR/<arm>.pt for scripts/07_bench_edge.py. Off by default: none of "
+            "the reported metrics need weights. Only the pre-declared benchmark "
+            "fold is kept -- see configs/arms.yaml:reporting.benchmark_fold."
+        ),
+    )
+    parser.add_argument(
+        "--emit-weights",
+        default=None,
+        metavar="DIR",
+        help=(
+            "REPRODUCE already-completed benchmark-fold runs purely to write their "
+            "weights, appending nothing to the registry. Needed because --save-weights "
+            "cannot help once a run is complete: weights are not part of the run_id, "
+            "so the run is skipped and no file is written. The reproduced metrics are "
+            "checked against the recorded ones and a mismatch aborts."
+        ),
+    )
+    parser.add_argument(
+        "--reproduce-tolerance",
+        type=float,
+        default=1e-6,
+        metavar="EPS",
+        help=(
+            "how far a reproduced metric may fall from the recorded one before "
+            "--emit-weights aborts. The default is effectively exact; relax it only "
+            "when reproducing on different hardware from the original run."
         ),
     )
     add_fallback_argument(parser)
@@ -186,8 +320,12 @@ def main() -> int:
             spec["run_id"] = registry.compute_run_id(**spec)
             specs.append(spec)
 
+    bench_fold = benchmark_fold(arms_cfg)
     todo, skipped = registry.plan_runs(specs)
     registry.print_plan(SCRIPT, todo, skipped)
+    if args.save_weights or args.emit_weights:
+        print("[weights] benchmark fold is repeat %d fold %d "
+              "(configs/arms.yaml:reporting.benchmark_fold)" % bench_fold)
     if args.limit:
         todo = todo[: args.limit]
         print("[registry] --limit %d: running %d of them now" % (args.limit, len(todo)))
@@ -207,7 +345,12 @@ def main() -> int:
                 )
             )
         return 0
-    if not todo:
+    emit_specs = [
+        spec for spec in specs
+        if (spec["repeat"], spec["fold"]) == bench_fold
+    ] if args.emit_weights else []
+
+    if not todo and not emit_specs:
         print("[registry] nothing to do.")
         return 0
 
@@ -239,6 +382,21 @@ def main() -> int:
     weights_proof = require_class_weights_verified(
         int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
     )
+
+    # ---- reproduce completed runs, purely to write their weights ----
+    if emit_specs:
+        rule("--emit-weights: reproducing %d completed run(s), appending nothing"
+             % len(emit_specs))
+        written = emit_weights_for_completed(
+            Path(args.emit_weights), emit_specs,
+            tolerance=args.reproduce_tolerance, arms_cfg=arms_cfg,
+            data_cfg=data_cfg, index=index, cache=cache, device=args.device,
+            quiet=args.quiet, allow_fallback=args.allow_pretrained_fallback,
+        )
+        rule("DONE -- %d checkpoint(s) written, registry untouched" % written)
+        print("[registry] %d record(s), unchanged" % len(registry.load_registry()))
+        if not todo:
+            return 0
 
     # ---- run ----
     completed = 0
@@ -352,8 +510,8 @@ def main() -> int:
                 "model_notes": bundle.notes,
             },
         )
-        if args.save_weights:
-            save_best_weights(
+        if args.save_weights and (spec["repeat"], spec["fold"]) == bench_fold:
+            save_fold_weights(
                 Path(args.save_weights), spec, bundle, result, metrics["f1_macro"]
             )
 

@@ -5,9 +5,15 @@ artifacts/ after that run's registry record had been removed. They looked exactl
 like current output, and this repository is cited in the manuscript's data
 availability statement.
 
-Two defences, both tested here: the output set is cleared before anything is
-regenerated, and everything written carries a provenance stamp so a stale file
-announces itself.
+Two defences, both tested here: output the run did not produce is PRUNED once it
+knows what it produced, and everything written carries a provenance stamp so a
+stale file announces itself.
+
+The prune replaced an up-front clear. Deleting first defeated the content check
+that leaves an unchanged artefact alone, and rewriting every table and figure on
+every run purely to move a timestamp cost more in review noise than the timestamp
+was ever worth -- the record count, corpus fingerprint and registry sha1 are the
+parts of the stamp that identify a stale file.
 """
 
 from __future__ import annotations
@@ -47,26 +53,42 @@ def make_records(n, arm="yolo26n", digest="abc123"):
     ]
 
 
-# ---------------------------------------------------------------- clearing
+# ---------------------------------------------------------------- pruning
+#
+# Nothing is deleted up front any more. Deleting first defeated the content check
+# that stops an unchanged artefact being rewritten purely to move its timestamp,
+# and that rewrite was the entire source of the review noise. What replaces it is
+# a prune AFTER the run: output the run did not produce is removed.
 
 
-def test_clear_removes_tables_and_figures(script06, artifacts):
+def test_prune_removes_figures_this_run_did_not_produce(script06, artifacts):
     figures_dir = artifacts / "figures"
     figures_dir.mkdir()
-    for name in aggregate.TABLE_NAMES:
-        (artifacts / name).write_text("stale", encoding="utf-8")
-    for name in ("fig_pareto.pdf", "fig_pareto.png", "fig_cv_box.pdf"):
+    kept = figures_dir / "fig_pareto.pdf"
+    kept.write_text("fresh", encoding="utf-8")
+    for name in ("fig_gone.pdf", "fig_gone.png"):
         (figures_dir / name).write_text("stale", encoding="utf-8")
 
-    removed = script06.clear_outputs(artifacts, figures_dir)
+    removed = script06.prune_outputs(figures_dir, [kept])
 
-    assert removed == len(aggregate.TABLE_NAMES) + 3
-    assert not any((artifacts / n).exists() for n in aggregate.TABLE_NAMES)
-    assert list(figures_dir.iterdir()) == []
+    assert {p.name for p in removed} == {"fig_gone.pdf", "fig_gone.png"}
+    assert kept.exists()
 
 
-def test_clear_leaves_everything_else_alone(script06, artifacts):
-    """Frozen inputs, the registry and other scripts' outputs are not ours."""
+def test_prune_removes_tables_no_longer_produced(script06, artifacts):
+    for name in aggregate.TABLE_NAMES:
+        (artifacts / name).write_text("x", encoding="utf-8")
+    kept = artifacts / aggregate.TABLE_NAMES[0]
+
+    removed = script06.prune_outputs(
+        artifacts / "figures", [], artifacts=artifacts, tables=[kept]
+    )
+
+    assert kept.exists()
+    assert len(removed) == len(aggregate.TABLE_NAMES) - 1
+
+
+def test_prune_leaves_everything_else_alone(script06, artifacts):
     keep = [
         "image_index.csv", "folds.json", "dev_split.json", "registry.jsonl",
         "resolved_arms.yaml", "uniform_grid.csv", "learning_curve.csv",
@@ -74,31 +96,84 @@ def test_clear_leaves_everything_else_alone(script06, artifacts):
     ]
     for name in keep:
         (artifacts / name).write_text("keep", encoding="utf-8")
-    (artifacts / "summary_cv.csv").write_text("stale", encoding="utf-8")
     figures_dir = artifacts / "figures"
     figures_dir.mkdir()
 
-    script06.clear_outputs(artifacts, figures_dir)
+    script06.prune_outputs(figures_dir, [], artifacts=artifacts, tables=[])
 
     for name in keep:
         assert (artifacts / name).exists(), "%s was deleted" % name
-    assert not (artifacts / "summary_cv.csv").exists()
 
 
-def test_clear_is_safe_when_nothing_exists(script06, artifacts):
-    assert script06.clear_outputs(artifacts, artifacts / "figures") == 0
+def test_prune_is_safe_when_nothing_exists(script06, artifacts):
+    assert script06.prune_outputs(artifacts / "figures", []) == []
 
 
-def test_clear_does_not_touch_non_image_files_in_the_figure_dir(script06, artifacts):
+def test_prune_does_not_touch_non_image_files_in_the_figure_dir(script06, artifacts):
     figures_dir = artifacts / "figures"
     figures_dir.mkdir()
     (figures_dir / "notes.txt").write_text("hand written", encoding="utf-8")
     (figures_dir / "fig_pareto.pdf").write_text("stale", encoding="utf-8")
 
-    script06.clear_outputs(artifacts, figures_dir)
+    script06.prune_outputs(figures_dir, [])
 
     assert (figures_dir / "notes.txt").exists()
     assert not (figures_dir / "fig_pareto.pdf").exists()
+
+
+# ---------------------------------------------------------------- no churn
+
+
+def test_an_unchanged_table_is_not_rewritten(artifacts, registry_path):
+    """The point of item 4: identical data must not produce a diff."""
+    import time
+
+    frame = pd.DataFrame({"arm": ["a"], "f1": [0.5]})
+    target = artifacts / "t.csv"
+
+    first = aggregate.provenance(make_records(3), registry_path)
+    aggregate.write_csv_with_provenance(frame, target, first)
+    before = target.read_bytes()
+    stamp_time = target.stat().st_mtime
+
+    time.sleep(0.01)
+    later = aggregate.provenance(make_records(3), registry_path)
+    later["generated_at"] = "2099-01-01T00:00:00+00:00"     # a different timestamp
+    aggregate.write_csv_with_provenance(frame, target, later)
+
+    assert target.read_bytes() == before, "an unchanged table was rewritten"
+    assert target.stat().st_mtime == stamp_time
+
+
+def test_changed_data_does_rewrite(artifacts, registry_path):
+    target = artifacts / "t.csv"
+    block = aggregate.provenance(make_records(3), registry_path)
+    aggregate.write_csv_with_provenance(
+        pd.DataFrame({"arm": ["a"], "f1": [0.5]}), target, block
+    )
+    before = target.read_bytes()
+    aggregate.write_csv_with_provenance(
+        pd.DataFrame({"arm": ["a"], "f1": [0.9]}), target, block
+    )
+    assert target.read_bytes() != before
+
+
+def test_the_content_key_moves_with_the_data(registry_path):
+    a = aggregate.content_key(make_records(3))
+    b = aggregate.content_key(make_records(4))
+    assert a != b
+    assert aggregate.content_key(make_records(3)) == a
+
+
+def test_the_content_key_covers_the_plotting_code():
+    """A change to HOW a figure is drawn must invalidate it, which a hash of the
+    data alone would miss."""
+    import inspect
+
+    from srpcard import figures
+
+    source = inspect.getsource(aggregate.content_key)
+    assert "figures.py" in source
 
 
 # ---------------------------------------------------------------- provenance

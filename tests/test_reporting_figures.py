@@ -323,26 +323,27 @@ def test_publication_figures_go_to_their_own_directory():
     assert '"figures_pub" if args.for_publication else "figures"' in source
 
 
-def test_publication_mode_does_not_rewrite_the_tables():
-    """The default set's tables are inputs here; rewriting them would let the two
+def test_publication_mode_does_not_rewrite_or_prune_the_tables():
+    """The default set's tables are inputs here; touching them would let the two
     modes overwrite each other's work."""
     source = (REPO_ROOT / "scripts" / "06_export_figures.py").read_text(encoding="utf-8")
-    assert "clear_tables=not args.for_publication" in source
-    assert "if args.for_publication:\n        print(\"[table] not rewritten" in source
+    assert "artifacts=None if args.for_publication else artifacts_dir(data_cfg)" in source
+    assert '[table] not rewritten in --for-publication' in source
 
 
-def test_clear_outputs_can_spare_the_tables(script06, artifacts):
+def test_pruning_can_spare_the_tables(script06, artifacts):
+    """Publication mode passes artifacts=None, so tables are never pruned."""
     figures_dir = artifacts / "figures_pub"
     figures_dir.mkdir()
     (figures_dir / "fig_pareto.pdf").write_text("stale", encoding="utf-8")
     for name in aggregate.TABLE_NAMES:
         (artifacts / name).write_text("keep", encoding="utf-8")
 
-    removed = script06.clear_outputs(artifacts, figures_dir, clear_tables=False)
+    removed = script06.prune_outputs(figures_dir, [])
 
-    assert removed == 1
+    assert len(removed) == 1
     for name in aggregate.TABLE_NAMES:
-        assert (artifacts / name).exists(), "%s was cleared in publication mode" % name
+        assert (artifacts / name).exists(), "%s was pruned in publication mode" % name
 
 
 # ---------------------------------------------------------------- decoupling

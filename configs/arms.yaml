@@ -184,6 +184,15 @@ baseline_lr_sweep:
 # so both frontier points are available if the manuscript shows both.
 reporting:
   detailed_arm: mobilenetv3_small
+  # The ONE fold whose weights are kept for the edge benchmark (script 07).
+  # Fixed and pre-declared, identical across architectures. NOT "the fold with
+  # the highest test macro-F1": selecting on test data is the circularity this
+  # project spent weeks removing. Harmless for latency, which the architecture
+  # decides, but it would contaminate the INT8 accuracy delta and could not be
+  # described in a methods section without a caveat.
+  benchmark_fold:
+    repeat: 0
+    fold: 0
 
 ablation:
   arm: mobilenetv3_small

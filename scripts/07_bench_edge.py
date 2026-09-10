@@ -31,7 +31,11 @@ Per arm it measures, at batch size 1, after 50 discarded warm-up iterations and
 over at least 200 timed ones:
 
   - the FULL pipeline: file read -> letterbox -> forward -> label
-  - the forward pass alone, so the letterbox share is visible
+  - the forward pass alone, so the letterbox cost is visible in BOTH absolute
+    milliseconds and as a share. The share is a property of the host: on a
+    slower CPU the forward pass grows more than the file read and the resize,
+    so the same model shows a smaller share on a Pi than on a workstation.
+    Report the share from the Pi run, never from a workstation rehearsal.
   - median, IQR and p95 -- NOT the mean. On an edge device the tail is what
     disrupts operations, and a mean hides it.
   - peak resident memory
@@ -849,9 +853,8 @@ def main() -> int:
         params = int(sum(p.numel() for p in module.parameters()))
         full = stats(bench(module, image_paths, iterations, with_letterbox=True))
         forward = stats(bench(module, image_paths, iterations, with_letterbox=False))
-        letterbox_share = round(
-            100.0 * (full["median_ms"] - forward["median_ms"]) / full["median_ms"], 1
-        )
+        letterbox_ms = round(full["median_ms"] - forward["median_ms"], 3)
+        letterbox_share = round(100.0 * letterbox_ms / full["median_ms"], 1)
 
         out_dir = Path(args.out).parent
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -861,7 +864,14 @@ def main() -> int:
               % (full["median_ms"], full["iqr_ms"], full["p95_ms"]))
         print("  forward only    median %8.3f ms  IQR %7.3f  p95 %8.3f"
               % (forward["median_ms"], forward["iqr_ms"], forward["p95_ms"]))
-        print("  letterbox share %8.1f %% of the median" % letterbox_share)
+        # Both the absolute cost and the share, because the share is a property
+        # of THIS host and moves with it: on a slower CPU the forward pass grows
+        # far more than a file read and a resize, so the same model shows a much
+        # smaller letterbox share on a Pi than on a workstation. The milliseconds
+        # are the portable number; the percentage is only meaningful next to the
+        # device block.
+        print("  letterbox cost  %8.3f ms  = %.1f %% of the full-pipeline median"
+              % (letterbox_ms, letterbox_share))
         print("  peak RSS        %8s MB" % peak_rss_mb())
         if int8.get("available"):
             print("  int8 size       %8.3f MB  (fp32 %.3f, ratio %s)"
@@ -897,7 +907,13 @@ def main() -> int:
             "params": params,
             "full_pipeline": full,
             "forward_only": forward,
+            "letterbox_ms": letterbox_ms,
             "letterbox_share_pct": letterbox_share,
+            "letterbox_share_note": (
+                "share of the full-pipeline median on THIS host; it falls on a "
+                "slower CPU, where the forward pass grows more than the file read "
+                "and resize. Quote letterbox_ms across devices, not the share."
+            ),
             "peak_rss_mb": peak_rss_mb(),
             "int8": int8,
             "soak": soak_result,

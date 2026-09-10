@@ -3,7 +3,7 @@
 # scripts: 03_run_cv
 # corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
 # registry sha1: 5540888815d618d6
-# generated: 2026-09-10T02:26:18+00:00
+# generated: 2026-09-10T03:13:50+00:00
 arm,repeat,fold,selected_epoch,epoch_budget,fraction_of_budget,min_val_loss_epoch,best_val_f1
 yolo26n,0,0,17,25,0.68,17,0.5907326007326008
 yolo26n,0,1,7,25,0.28,22,0.7116232322888669

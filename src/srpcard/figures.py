@@ -64,6 +64,18 @@ def set_render_provenance(enabled: bool) -> None:
     RENDER_PROVENANCE = bool(enabled)
 
 
+def _content_sha1_of(path: Path) -> str | None:
+    """The content key recorded inside an already-written figure, if any."""
+    import re
+
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    match = re.search(rb"content=([0-9a-f]{6,40})", raw)
+    return match.group(1).decode("ascii") if match else None
+
+
 def _stamp(fig) -> None:
     """Draw the provenance strip along the bottom of the figure."""
     if not PROVENANCE or not RENDER_PROVENANCE:
@@ -101,13 +113,14 @@ def save(fig, out_dir: Path, name: str) -> list[Path]:
             "Creator": "srpcard/figures.py",
             # scripts belongs here, not only in the Subject line: it is the
             # claim a reader checks -- "which runs is this figure of?"
-            "Keywords": "records=%d scripts=%s arms=%s sources=%s registry=%s"
+            "Keywords": "records=%d scripts=%s arms=%s sources=%s registry=%s content=%s"
             % (
                 PROVENANCE["n_records"],
                 ",".join(PROVENANCE.get("scripts") or []) or "none",
                 ",".join(PROVENANCE["arms"]) or "none",
                 ",".join(PROVENANCE.get("sources") or []) or "none",
                 PROVENANCE["registry_sha1"],
+                PROVENANCE.get("content_sha1", "none"),
             ),
         }
     # PNG carries the same text, under the keys the PNG spec allows, so a
@@ -123,15 +136,23 @@ def save(fig, out_dir: Path, name: str) -> list[Path]:
         else {}
     )
 
-    written = []
-    for suffix in ("pdf", "png"):
-        target = out_dir / ("%s.%s" % (name, suffix))
-        chosen = metadata if suffix == "pdf" else png_metadata
+    written = [out_dir / ("%s.%s" % (name, suffix)) for suffix in ("pdf", "png")]
+
+    # Only rewrite when the content changed. Every save embeds a timestamp, so
+    # re-exporting an unchanged figure produced a diff on every run: review noise
+    # that the stamp was not buying anything for. The record count, corpus
+    # fingerprint and registry sha1 still identify a stale figure.
+    wanted = (PROVENANCE or {}).get("content_sha1")
+    if wanted and all(p.exists() for p in written):
+        if all(_content_sha1_of(p) == wanted for p in written):
+            return written
+
+    for target in written:
+        chosen = metadata if target.suffix == ".pdf" else png_metadata
         if chosen:
-            fig.savefig(target, format=suffix, metadata=chosen)
+            fig.savefig(target, format=target.suffix.lstrip("."), metadata=chosen)
         else:
-            fig.savefig(target, format=suffix)
-        written.append(target)
+            fig.savefig(target, format=target.suffix.lstrip("."))
     import matplotlib.pyplot as plt
 
     plt.close(fig)

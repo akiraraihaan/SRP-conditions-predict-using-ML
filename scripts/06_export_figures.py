@@ -79,26 +79,43 @@ def stamped(records, *, sources=None):
     return block
 
 
-def clear_outputs(artifacts: Path, out_dir: Path, *, clear_tables: bool = True) -> int:
-    """Delete everything this script generates, before regenerating any of it.
+def prune_outputs(
+    out_dir: Path, written: list[Path],
+    artifacts: Path | None = None, tables: list[Path] | None = None,
+) -> list[Path]:
+    """Delete output this run did not produce -- figures, and optionally tables.
 
-    Scoped deliberately: the three tables aggregate.write_all() produces, and the
-    figure files in out_dir. Nothing else in artifacts/ is touched -- the frozen
-    inputs, the registry and the other scripts' outputs are not this script's to
-    remove.
+    Nothing is deleted UP FRONT any more. Deleting first defeats the content
+    check that stops an unchanged artefact being rewritten purely to move its
+    timestamp, and that rewrite was the whole source of the review noise.
+
+    The guarantee it replaces the up-front clear with is the same one that
+    mattered: the directory never keeps output from a previous configuration --
+    a figure whose inputs have gone, an arm no longer benchmarked, a table no
+    longer produced. What it no longer guarantees is that an INTERRUPTED run
+    leaves nothing behind; it leaves the previous run's files, which carry their
+    own provenance stamp naming the record count, corpus and registry they came
+    from, and that is what identifies them as stale.
     """
-    removed = 0
-    if clear_tables:
-        for name in aggregate.TABLE_NAMES:
-            target = artifacts / name
-            if target.exists():
-                target.unlink()
-                removed += 1
+    removed = []
+    kept = {p.resolve() for p in written}
     if out_dir.exists():
         for target in sorted(out_dir.iterdir()):
-            if target.is_file() and target.suffix.lower() in {".pdf", ".png"}:
+            if (
+                target.is_file()
+                and target.suffix.lower() in {".pdf", ".png"}
+                and target.resolve() not in kept
+            ):
                 target.unlink()
-                removed += 1
+                removed.append(target)
+
+    if artifacts is not None:
+        kept_tables = {p.resolve() for p in (tables or [])}
+        for name in aggregate.TABLE_NAMES:
+            target = artifacts / name
+            if target.exists() and target.resolve() not in kept_tables:
+                target.unlink()
+                removed.append(target)
     return removed
 
 
@@ -159,26 +176,24 @@ def main() -> int:
 
     # ---- clear the whole output set BEFORE regenerating ----
     if args.keep_stale:
-        print("\n[clear] skipped -- --keep-stale")
+        print("\n[prune] disabled -- --keep-stale")
     else:
-        # In publication mode only this figure directory is cleared: the tables
-        # and the default figure set belong to the other mode and are inputs here.
-        removed = clear_outputs(
-            artifacts_dir(data_cfg), out_dir, clear_tables=not args.for_publication
-        )
         print(
-            "\n[clear] removed %d previously generated file(s); a partial run below\n"
-            "        leaves fewer files, never a mix of fresh and stale ones" % removed
+            "\n[prune] output this run does not produce is removed AFTERWARDS, not\n"
+            "        cleared first: an artefact whose content is unchanged is left\n"
+            "        alone rather than rewritten to move its timestamp."
         )
 
     written: list[Path] = []
     skipped: list[str] = []
 
     # ---- tables first: the figures read them ----
+    table_paths: list[Path] = []
     if args.for_publication:
         print("[table] not rewritten in --for-publication; read as inputs")
     else:
         tables = aggregate.write_all(data_cfg)
+        table_paths = list(tables.values())
         for name, path in tables.items():
             print("[table] %s -> %s" % (name, path.name))
         if not tables:
@@ -316,9 +331,24 @@ def main() -> int:
     else:
         skipped.append("selected epochs: artifacts/selected_epochs.csv (run scripts/03_run_cv.py)")
 
+    pruned = (
+        []
+        if args.keep_stale
+        else prune_outputs(
+            out_dir, written,
+            # in publication mode the tables are inputs, not this run's output
+            artifacts=None if args.for_publication else artifacts_dir(data_cfg),
+            tables=list(table_paths),
+        )
+    )
+
     rule("DONE")
-    print("[figures] wrote %d file(s) (%d figures, PDF + PNG each) to %s"
+    print("[figures] %d file(s) (%d figures, PDF + PNG each) in %s"
           % (len(written), len(written) // 2, out_dir.name))
+    if pruned:
+        print("[pruned]  %d file(s) this run did not produce:" % len(pruned))
+        for path in pruned:
+            print("    %s" % path.name)
     if args.for_publication:
         print("          no provenance strip drawn; it is in the file metadata")
     for path in written:
