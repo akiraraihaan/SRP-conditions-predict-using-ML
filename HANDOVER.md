@@ -543,6 +543,52 @@ afterwards, so a future import cannot silently couple it to a training machine.
 folds plus `support_total` and `support_mean`, so the manuscript's per-class table
 needs no recomputation. `support_total` is the class's clean count times 3.
 
+## 4.10 The edge benchmark
+
+`scripts/07_bench_edge.py` benchmarks **all five arms**, not only the selected
+one. Inference needs no training, so the extra cost is minutes; what it buys is a
+**second, directly measured cost axis** to set against GFLOPs, and the Pareto
+frontier recomputed on it.
+
+```bash
+python scripts/07_bench_edge.py --weights-dir exported --images data/test        --cooling passive --soak-minutes 10
+```
+
+Per arm, at batch size 1, after 50 discarded warm-up iterations and over at least
+200 timed ones: the **full pipeline** (file read -> letterbox -> forward ->
+label) and the **forward pass alone**, so the letterbox share is visible;
+**median, IQR and p95** -- never the mean, because on an edge device the tail is
+what disrupts operations; peak resident memory; **INT8 size and the macro-F1
+change after quantisation, measured on the same images**, so the microcontroller
+claim rests on a measurement rather than a ratio quoted from the literature; and
+a sustained loop reporting the median drift between the first and last minute
+with the CPU temperature trace where the board exposes it.
+
+`--cooling` is required for a reportable thermal result and the script says so
+when it is left at `unknown`. The `device` block -- CPU, cores, OS, kernel,
+python, torch, threads, governor, cooling, iteration counts, timestamp -- is
+top-level in `edge_benchmark.json` and printed.
+
+`artifacts/pareto_status_device.csv` recomputes dominance over registry macro-F1,
+params, **measured median latency** and INT8 size, and reports whether the
+frontier matches the GFLOPs one. **It refuses to compare the two when only a
+subset of arms was benchmarked**, since a difference would then be caused by the
+arm set rather than by the cost axis.
+
+### Checkpoints
+
+Scripts 03-05 do not persist weights -- `train_fold` returns `best_state` in
+memory and the run records only metrics. `03_run_cv.py --save-weights DIR` keeps
+the best fold per arm, and 07 **refuses to run** without a checkpoint for every
+arm it was asked for. That refusal matters: latency, memory and INT8 size are
+decided by the architecture and would look entirely plausible from an untrained
+model, while the INT8 accuracy delta would be noise, and nothing in the output
+would show which.
+
+07 needs no CUDA, no training and no dataset beyond a directory of images. One
+subdirectory per class enables the accuracy measurement; a flat directory gives
+latency only and says so.
+
 ## 5. Things to look at before writing the methods section
 
 1. **`selected_epoch` distribution.** `artifacts/selected_epochs.csv` and
@@ -792,7 +838,7 @@ pip install pytest
 python -m pytest
 ```
 
-174 tests, ~38 s, no GPU and no dataset needed. They cover the registry schema
+191 tests, ~57 s, no GPU and no dataset needed. They cover the registry schema
 guard, hyperparameter drift, the config snapshot and restore, the two size
 measurements and the thop cleanup, and the Colab symlink cell — the last by
 reading cell 5's source out of the notebook and executing it against `tmp_path`,

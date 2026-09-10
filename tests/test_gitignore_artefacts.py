@@ -45,6 +45,7 @@ COMMITTED = [
     ("artifacts/paired_comparisons.csv", "06", "every pair of arms, fold by fold"),
     ("artifacts/pareto_status.csv", "06", "Pareto frontier and domination"),
     ("artifacts/edge_benchmark.json", "07", "Raspberry Pi results"),
+    ("artifacts/pareto_status_device.csv", "07", "frontier on measured latency"),
     ("artifacts/figures/fig_pareto.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_pareto.png", "06", "publication figure"),
     ("artifacts/figures/fig_pareto_size.pdf", "06", "publication figure"),

@@ -101,6 +101,8 @@ artifacts/*
 !artifacts/learning_curve.csv
 # 07, Raspberry Pi
 !artifacts/edge_benchmark.json
+# 07, the Pareto frontier recomputed on MEASURED latency rather than GFLOPs
+!artifacts/pareto_status_device.csv
 
 # publication figures. `artifacts/*` matches the directory but not its contents,
 # so un-ignoring the directory is enough to let git descend into it.

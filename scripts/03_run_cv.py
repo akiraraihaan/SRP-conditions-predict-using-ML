@@ -40,6 +40,64 @@ from srpcard.train import (  # noqa: E402
 SCRIPT = "03_run_cv"
 
 
+def save_best_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> None:
+    """Keep the best fold's weights per arm, for the edge benchmark.
+
+    Deliberately not one file per fold: 75 checkpoints are large, the reported
+    metrics come from the registry rather than from weights, and 07 benchmarks
+    one model per arm. The fold kept is the one with the highest TEST macro-F1,
+    which is a reporting choice and is recorded in the sidecar so the benchmark
+    can say which fold it measured.
+
+    The file is the {'arm', 'state_dict'} form 07's loader documents.
+    """
+    import json
+
+    import torch
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = out_dir / ("%s.json" % spec["arm"])
+    if sidecar.exists():
+        try:
+            previous = json.loads(sidecar.read_text(encoding="utf-8"))
+            if float(previous.get("f1_macro", -1)) >= f1_macro:
+                return
+        except Exception:  # noqa: BLE001 - a damaged sidecar is replaced
+            pass
+
+    target = out_dir / ("%s.pt" % spec["arm"])
+    torch.save(
+        {
+            "arm": spec["arm"],
+            "architecture": spec["architecture"],
+            "state_dict": result.best_state,
+            "run_id": spec["run_id"],
+            "repeat": spec["repeat"],
+            "fold": spec["fold"],
+            "f1_macro": f1_macro,
+            "checkpoint_resolved": bundle.checkpoint_resolved,
+        },
+        target,
+    )
+    sidecar.write_text(
+        json.dumps(
+            {
+                "arm": spec["arm"],
+                "run_id": spec["run_id"],
+                "repeat": spec["repeat"],
+                "fold": spec["fold"],
+                "f1_macro": f1_macro,
+                "weights": target.name,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    print("  [weights] kept r%df%d as the best %s so far (f1 %.4f) -> %s"
+          % (spec["repeat"], spec["fold"], spec["arm"], f1_macro, target))
+
+
 def rule(title: str) -> None:
     print("\n" + "=" * 74 + "\n" + title + "\n" + "=" * 74)
 
@@ -54,6 +112,17 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None, help="override epochs (smoke tests)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--quiet", action="store_true", help="suppress per-epoch lines")
+    parser.add_argument(
+        "--save-weights",
+        default=None,
+        metavar="DIR",
+        help=(
+            "also write each arm's best fold weights to DIR/<arm>.pt, for "
+            "scripts/07_bench_edge.py. Off by default: 75 checkpoints are large "
+            "and none of the reported metrics need them. Only the best fold per "
+            "arm is kept, and only if it beats what is already there."
+        ),
+    )
     add_fallback_argument(parser)
     args = parser.parse_args()
 
@@ -283,6 +352,11 @@ def main() -> int:
                 "model_notes": bundle.notes,
             },
         )
+        if args.save_weights:
+            save_best_weights(
+                Path(args.save_weights), spec, bundle, result, metrics["f1_macro"]
+            )
+
         registry.append_record(record)
         completed += 1
         print("  [registry] appended %s" % spec["run_id"])
