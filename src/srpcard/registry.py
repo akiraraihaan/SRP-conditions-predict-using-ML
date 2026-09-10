@@ -208,6 +208,116 @@ def audit_registry(path: Path | None = None) -> dict[str, Any]:
     return {"path": str(path), "n_records": len(records), "incomplete": incomplete}
 
 
+# Fields that are RECOVERABLE rather than measured-on-the-day: the hardware block
+# lives in each record's own `library_versions`, and the efficiency figures are
+# pure functions of (architecture, num_classes, image_size). A null in any of
+# them therefore means a backfill was lost, not that the information is gone --
+# which is a different situation from a genuinely stale record, and needs saying
+# differently. See scripts/backfill_efficiency.py.
+RECOVERABLE_FIELDS = (
+    "gpu",
+    "gpu_count",
+    "cuda_version",
+    "device_kind",
+    "params",
+    "gflops",
+    "size_mb",
+    "size_mb_fp16",
+    "size_mb_fp32",
+    "size_mb_fp16_payload",
+    "size_mb_fp32_payload",
+)
+
+# Never recorded by any run: promoted to the top level after the fact, and the
+# source they were recovered from (library_versions) never carried them. A null
+# here is the honest value, not a lost backfill.
+NEVER_RECORDED_FIELDS = ("driver_version", "compute_capability")
+
+
+def derived_field_audit(
+    path: Path | None = None, fields: Iterable[str] = RECOVERABLE_FIELDS
+) -> dict[str, Any]:
+    """Which recoverable fields are null, in how many records, grouped by script.
+
+    Exists because a lost backfill used to be discoverable only by running
+    `backfill_efficiency.py --dry-run` -- a different tool, for a different job.
+    A registry can be overwritten by a copy that predates a backfill (a Drive
+    copy replacing a merged one is how it happened here), and the loss is silent:
+    every record still validates, the run_ids still match, and the only symptom
+    is nulls arriving in the Pareto table weeks later.
+    """
+    path = Path(path) if path is not None else registry_path()
+    records = load_registry(path)
+    fields = tuple(fields)
+
+    by_script: dict[str, dict[str, Any]] = {}
+    for record in records:
+        script = record.get("script", "?")
+        entry = by_script.setdefault(script, {"n": 0, "missing": {}, "arms": set()})
+        entry["n"] += 1
+        for field in fields:
+            if record.get(field) is None:
+                entry["missing"][field] = entry["missing"].get(field, 0) + 1
+                entry["arms"].add(record.get("arm", "?"))
+
+    affected = sum(
+        1
+        for record in records
+        if any(record.get(field) is None for field in fields)
+    )
+    return {
+        "path": str(path),
+        "n_records": len(records),
+        "n_affected": affected,
+        "by_script": by_script,
+        "fields": fields,
+    }
+
+
+def print_derived_field_report(path: Path | None = None) -> bool:
+    """One line per script naming what is missing. True when nothing is."""
+    audit = derived_field_audit(path)
+    if not audit["n_records"]:
+        print("  registry is empty -- nothing to check")
+        return True
+
+    if not audit["n_affected"]:
+        print(
+            "  %d record(s), every recoverable field populated"
+            % audit["n_records"]
+        )
+        return True
+
+    print(
+        "  INCOMPLETE -- %d of %d record(s) are missing a field that a backfill"
+        % (audit["n_affected"], audit["n_records"])
+    )
+    print("  should have filled. Grouped by script:\n")
+    for script in sorted(audit["by_script"]):
+        entry = audit["by_script"][script]
+        if not entry["missing"]:
+            print("      %-26s n=%-4d complete" % (script, entry["n"]))
+            continue
+        summary = ", ".join(
+            "%s x%d" % (field, count)
+            for field, count in sorted(entry["missing"].items())
+        )
+        print("      %-26s n=%-4d %s" % (script, entry["n"], summary))
+        print("      %-26s %-7s arms: %s"
+              % ("", "", ", ".join(sorted(str(a) for a in entry["arms"]))))
+    print(
+        "\n  These are RECOVERABLE, not lost runs: the hardware block is in each"
+        "\n  record's own library_versions, and params/gflops/size_mb are functions"
+        "\n  of the architecture. Restore a committed copy with"
+        "\n      python scripts/merge_registry.py <current> <older> --out <merged>"
+        "\n  and derive whatever git never held with"
+        "\n      python scripts/backfill_efficiency.py --dry-run"
+        "\n  Do NOT let a run write results on top of this: the nulls propagate"
+        "\n  into summary_cv.csv and pareto_status.csv without any error."
+    )
+    return False
+
+
 def warn_if_stale(path: Path | None = None) -> bool:
     """Print a loud block if any record on disk predates the current schema.
 
@@ -227,19 +337,19 @@ def warn_if_stale(path: Path | None = None) -> bool:
         % (len(audit["incomplete"]), audit["n_records"])
     )
     print("  %s" % audit["path"])
+
+    # Grouped, not one line per record. Sixty-three consecutive near-identical
+    # lines scroll the reason for them off the screen, and the reason is the
+    # part that matters: which script, which field, how many.
+    groups: dict[tuple, list] = {}
     for entry in audit["incomplete"]:
-        print(
-            "  line %-4d %-16s %-22s %-12s r%sf%s"
-            % (
-                entry["line"],
-                entry["run_id"],
-                entry["script"],
-                entry["arm"],
-                entry["repeat"],
-                entry["fold"],
-            )
-        )
-        print("            missing: %s" % ", ".join(entry["missing"]))
+        groups.setdefault((entry["script"], tuple(entry["missing"])), []).append(entry)
+    for (script, missing), entries in sorted(groups.items()):
+        print("  %-26s %4d record(s)" % (script, len(entries)))
+        print("      missing: %s" % ", ".join(missing))
+        shown = ", ".join(e["run_id"] for e in entries[:4])
+        more = "" if len(entries) <= 4 else ", ... (+%d)" % (len(entries) - 4)
+        print("      e.g.     %s%s" % (shown, more))
     print(
         "  These runs are SKIPPED by run_id, so they will not be re-run and their\n"
         "  older numbers would be inherited into the final results. Delete the\n"
@@ -968,10 +1078,22 @@ def merge_registries(
     reconciled = []
     for run_id, record in by_id_a.items():
         if run_id in by_id_b:
-            combined, filled = merge_records(record, by_id_b[run_id])
+            combined, _ = merge_records(record, by_id_b[run_id])
             merged.append(combined)
-            if filled:
-                reconciled.append({"run_id": run_id, "filled": filled})
+            # What the merge gained RELATIVE TO A, which is the file being
+            # replaced. `merge_records` reports what it filled into whichever
+            # record was more populated -- so when B is the fuller one, as it is
+            # whenever A has lost a backfill, it correctly reports filling
+            # nothing, and the report read "reconciled 0" for a merge that in
+            # fact restored a field to every shared record. The question the
+            # caller is asking is not which record was the base.
+            gained = sorted(
+                field
+                for field, value in combined.items()
+                if value is not None and record.get(field) is None
+            )
+            if gained:
+                reconciled.append({"run_id": run_id, "filled": gained})
         else:
             merged.append(record)
     only_b = [rid for rid in by_id_b if rid not in by_id_a]

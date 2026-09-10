@@ -179,3 +179,29 @@ def test_cli_rejects_a_missing_input(tmp_path):
     a = write(tmp_path / "A.jsonl", [record("x")])
     result = run_cli(str(a), str(tmp_path / "nope.jsonl"), "--out", str(tmp_path / "C.jsonl"))
     assert result.returncode == 2
+
+
+def test_reconciliation_is_counted_relative_to_the_file_being_replaced():
+    """The count answers "what did this merge restore", not "which side was base".
+
+    When the OLDER registry is the more populated one -- exactly the case when a
+    backfill has been lost -- merge_records correctly reports filling nothing
+    into it, and the report used to read "reconciled 0" for a merge that in fact
+    restored a field to all 63 shared records. That reads as "nothing happened".
+    """
+    lost = {"run_id": "r1", "script": "01b_uniform_grid", "arm": "yolo26n",
+            "f1_macro": 0.5}
+    intact = dict(lost, gpu="Tesla T4", cuda_version="13.0", device_kind="cuda")
+
+    merged, report = registry.merge_registries([lost], [intact])
+
+    assert len(report["reconciled"]) == 1
+    assert set(report["reconciled"][0]["filled"]) == {"gpu", "cuda_version",
+                                                      "device_kind"}
+    assert merged[0]["gpu"] == "Tesla T4"
+
+
+def test_a_merge_that_restores_nothing_reports_nothing():
+    same = {"run_id": "r1", "script": "03_run_cv", "arm": "yolo26n", "f1_macro": 0.5}
+    _, report = registry.merge_registries([same], [dict(same)])
+    assert report["reconciled"] == []

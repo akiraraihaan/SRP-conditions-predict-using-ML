@@ -645,6 +645,83 @@ would show which.
 subdirectory per class enables the accuracy measurement; a flat directory gives
 latency only and says so.
 
+## 4.11 A lost backfill, and how to tell
+
+Two fields families in each record are RECOVERABLE rather than measured on the
+day, and both have been lost once by overwriting `artifacts/registry.jsonl` with
+an older copy moved back by hand:
+
+| family | fields | where it comes from |
+| --- | --- | --- |
+| hardware | `gpu`, `gpu_count`, `cuda_version`, `device_kind` | the record's own `library_versions` |
+| efficiency | `params`, `gflops`, `size_mb`, `size_mb_fp16`, `size_mb_fp32`, and the two `*_payload` variants | a function of the architecture |
+
+Losing them breaks nothing loudly. Every record still validates, every `run_id`
+still matches so no run is re-run, and the only symptom is nulls arriving in
+`summary_cv.csv` and `pareto_status.csv` weeks later.
+
+`driver_version` and `compute_capability` are NOT in this list. They were
+promoted to the top level after the fact and `library_versions` never carried
+them, so a null there is the honest value.
+
+### How it shows up now
+
+Phase 0 of `00_build_folds.py` prints a `registry completeness` section: one line
+per script naming the fields and the counts. It is reported, never fatal --
+nothing about building folds depends on these fields, and an empty registry is
+the normal state the first time the script runs.
+
+### Restoring it
+
+Prefer git. These values need no model at all, and a value measured on a
+different machine is not the value the run recorded: torch's zip container costs
+a few kilobytes that differ between builds, so a size measured locally lands
+about 0.003 MB away from the Colab figure. Two numbers for one model, in one
+table, is a worse outcome than a null.
+
+    git log --oneline -- artifacts/registry.jsonl
+    git show <commit>:artifacts/registry.jsonl > older.jsonl
+    python scripts/merge_registry.py artifacts/registry.jsonl older.jsonl \
+        --out merged.jsonl --dry-run
+
+`merge_registry.py` merges by `run_id`, prefers the more populated record, and
+refuses the whole merge on any measured-metric disagreement, so it cannot invent
+a value. Its `reconciled` count is measured against the FIRST input -- the file
+being replaced -- because "which side was the base" is not the question being
+asked.
+
+Only what git never held needs `backfill_efficiency.py`. That script now:
+
+- **plans before it writes.** Every arm it needs is resolved first. If any cannot
+  be built -- an ultralytics that cannot load `yolo26*-cls.pt` is the usual
+  cause -- it writes NOTHING, not even the records it could have filled. A
+  half-restored registry is indistinguishable from a whole one at every later
+  point, which makes it worse than the state it started from.
+- **needs a model only for what actually requires one.** Hardware recovery reads
+  the record's own `library_versions`, so it never depends on a framework being
+  loadable here.
+- **prefers a sibling record over measuring locally.** An architecture already
+  recorded elsewhere in the registry supplies its own figures. The lookup is
+  keyed on ARCHITECTURE and is not scoped by script, arm or protocol: these are
+  functions of the architecture alone, so `mobilenet_v3_small` resolves from 02,
+  03 and 04 together and `yolo26n-cls` from 01b and 03.
+
+  Unanimity is required, and it is checked PER FIELD. Checking the whole tuple
+  excluded an architecture as soon as any one of its six fields disagreed, which
+  is how `yolo26m-cls` -- 41 complete records, every one of them stating params
+  10,366,026 and gflops 4.851194368 -- came to need a model rebuilt to recover
+  two figures the registry already gave without dissent. What actually disagrees
+  there is the pair of container-inclusive sizes (`size_mb_fp32` 39.702 vs
+  39.708, `size_mb_fp16` 19.886 vs 19.892), a residue of the `torch.save`
+  filename dependence fixed in `d6fbeaf`; the payload variants, which exclude the
+  container, agree across all 41.
+
+  A field whose records disagree is excluded, never arbitrated -- not by majority,
+  not by recency. A disagreement means the quantity is not settled, and choosing
+  a candidate here would settle it by accident. The dry run prints the resolved
+  value for every architecture and field, and the competing values for every
+  field it excluded, before anything is written.
+
 ## 5. Things to look at before writing the methods section
 
 1. **`selected_epoch` distribution.** `artifacts/selected_epochs.csv` and

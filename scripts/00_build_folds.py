@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from srpcard import data as srp_data  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
-from srpcard import legacy_audit, legacy_split, models  # noqa: E402
+from srpcard import legacy_audit, legacy_split, models, registry  # noqa: E402
 from srpcard.config import (  # noqa: E402
     RUN_DEFINING_HYPERPARAMETERS,
     arms_snapshot_status,
@@ -539,6 +539,29 @@ def _preflight_config(cfg: dict) -> tuple[bool, dict]:
     return ok, {"pending": pending, "snapshot": status}
 
 
+def _preflight_registry(cfg: dict) -> tuple[bool, dict]:
+    """Report recoverable fields that are null, grouped by script.
+
+    A backfill can be LOST without anything failing: overwrite the registry with
+    a copy that predates it -- moving a file back from Drive by hand is enough --
+    and every record still validates, every run_id still matches, and the only
+    symptom is nulls surfacing in the Pareto table much later. This section makes
+    that visible in one line per script at the start of a session, instead of it
+    being found by running backfill_efficiency.py --dry-run, which is a different
+    tool for a different job.
+
+    Not fatal. Nothing downstream of building folds depends on these fields, and
+    an empty registry is the normal state the first time this script runs.
+    """
+    print("\n-- registry completeness --------------------------------------------")
+    path = registry.registry_path()
+    if not path.exists():
+        print("  no registry yet (%s) -- normal before script 01" % path.name)
+        return True, {"present": False}
+    clean = registry.print_derived_field_report(path)
+    return clean, {"present": True, "clean": clean}
+
+
 def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
     """Everything that should fail in minute one rather than in hour six.
 
@@ -552,6 +575,7 @@ def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
     verdicts["data_root"], _ = _preflight_data_root(cfg)
     verdicts["artefacts"], _ = _preflight_artefacts(cfg)
     verdicts["config"], _ = _preflight_config(cfg)
+    registry_clean, _ = _preflight_registry(cfg)
     if skip_checkpoints:
         print("\n-- pretrained checkpoints -------------------------------------------")
         print("  skipped -- --skip-checkpoint-preflight")
@@ -561,6 +585,9 @@ def phase_0_preflight(cfg: dict, *, skip_checkpoints: bool = False) -> bool:
     print("\n-- preflight verdict ------------------------------------------------")
     for name, good in verdicts.items():
         print("  %-14s %s" % (name, "ok" if good else "FAIL"))
+    # Reported, never fatal: see _preflight_registry.
+    print("  %-14s %s" % ("registry",
+          "ok" if registry_clean else "INCOMPLETE (not fatal -- see above)"))
     passed = all(verdicts.values())
     if not passed:
         print(
