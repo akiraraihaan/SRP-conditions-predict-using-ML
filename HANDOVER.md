@@ -603,6 +603,49 @@ frontier matches the GFLOPs one. **It refuses to compare the two when only a
 subset of arms was benchmarked**, since a difference would then be caused by the
 arm set rather than by the cost axis.
 
+
+### Thermal drift, and why the two scopes are interleaved
+
+A Raspberry Pi 3 with no cooling produced a **physically impossible** result:
+full pipeline median 725.9 ms, forward-only median 768.2 ms, letterbox cost
+**-42.3 ms**. The full pipeline contains the forward pass, so that cannot happen.
+The board was at 80.6 C before the timed runs began, rose to 82.7 C during them
+and peaked at 83.3 C. The scopes were measured sequentially, so the second one
+ran on a hotter chip. What was measured was thermal drift, not letterbox cost.
+
+The confound is removed rather than warned about:
+
+- **The scopes are interleaved.** `bench_interleaved` times the full pipeline and
+  the forward pass on the *same* iteration, alternating, so drift affects both
+  equally and the difference stays valid however hot the board gets. It costs
+  nothing -- the same number of forward passes, in a different order. The order
+  alternates too, since whichever scope runs second inherits the other's cache
+  and clock state.
+- **A negative difference is a failed measurement, not a result.** `letterbox_ms`
+  is written as `null` with `letterbox_measurement_ok: false` and a reason
+  naming both medians, never as a negative number, and the script exits non-zero.
+- **Each arm's timed run carries its own temperature bracket.**
+  `timed_run_temperature_c` records start, end and delta. The soak's trace covers
+  the soak; on a passively cooled board the timed runs are the part most at risk.
+- **Starting above 80 C is called out by arm**, at the time and again in the
+  summary, because every number from that point is taken under throttling.
+
+### What INT8 quantisation actually compresses
+
+`resnet18` reports an INT8 size of 42.717 MB against 42.731 MB fp32 -- a ratio of
+**1.0**. That is the correct result, not a bug, and the output now says so.
+
+`torch.ao.quantization.quantize_dynamic` converts **Linear and the RNN family
+only**. Conv2d is not supported: naming it in the set neither works nor errors.
+ResNet18 is almost entirely Conv2d, so one Linear layer covering **0.05 % of its
+11.18 M parameters** is quantised and the other 99.95 % stays in fp32.
+
+Every arm's `int8.coverage` block records `layer_census`,
+`quantised_layer_types`, `unquantised_layer_types`, `params_in_quantised_layers`
+and `params_quantised_pct`. The manuscript's microcontroller argument rests on
+quantisation, so a reader needs to know which architectures it can compress and
+which it cannot; a bare ratio of 1.0 reads as a broken measurement instead.
+
 ### Checkpoints
 
 Scripts 03-05 do not persist weights -- `train_fold` returns `best_state` in

@@ -66,6 +66,7 @@ import os
 import platform
 import subprocess
 import sys
+import textwrap
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1078,7 +1079,8 @@ def main() -> int:
                   % (letterbox_ms, letterbox_share))
         else:
             print("  letterbox cost  FAILED MEASUREMENT -- not reported")
-            print("      %s" % cost["reason"])
+            for line in textwrap.wrap(cost["reason"], width=70):
+                print("      %s" % line)
         if timed_start_c is not None:
             print("  timed-run temp  %8.1f -> %.1f C  (%+.1f)"
                   % (timed_start_c, timed_end_c if timed_end_c is not None else float("nan"),
@@ -1091,7 +1093,8 @@ def main() -> int:
                   % (int8["int8_size_mb"], int8.get("fp32_size_mb", float("nan")),
                      int8.get("size_ratio")))
             if int8.get("size_ratio_note"):
-                print("      %s" % int8["size_ratio_note"])
+                for line in textwrap.wrap(int8["size_ratio_note"], width=70):
+                    print("      %s" % line)
             if int8.get("accuracy_measured"):
                 print("  int8 macro-F1   %8.4f -> %.4f  (delta %+.4f over %d images)"
                       % (int8["macro_f1_fp32"], int8["macro_f1_int8"],
