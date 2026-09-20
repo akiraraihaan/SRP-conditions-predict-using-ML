@@ -87,6 +87,11 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 WARMUP = 50
 MIN_TIMED = 200
 IMAGE_SIZE = 224
+
+# Above this the board is throttling and every number taken from that point on
+# is a measurement of the cooling, not of the model. A Raspberry Pi 3 with no
+# heatsink sits here within a minute of starting work.
+THROTTLE_WARN_C = 80.0
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -255,33 +260,105 @@ def stats(samples_ms: list[float]) -> dict[str, float]:
     }
 
 
-def bench(module, image_paths: list[Path], iterations: int, with_letterbox: bool) -> list[float]:
-    """Time the pipeline. `with_letterbox=False` times the forward pass only."""
+def _predict(module, tensor) -> None:
+    """One forward pass and an argmax, the work a deployment actually does."""
+    logits = module(tensor)
+    while isinstance(logits, (tuple, list)):
+        logits = logits[0]
+    int(logits.argmax(dim=1).item())
+
+
+def bench_interleaved(
+    module, image_paths: list[Path], iterations: int
+) -> tuple[list[float], list[float]]:
+    """Time both scopes on the SAME iterations, alternating between them.
+
+    Measuring all of one scope and then all of the other makes the difference
+    between them a measurement of whatever drifted in between. On a passively
+    cooled board that drift is thermal, and it is larger than the quantity being
+    measured: a Raspberry Pi 3 already at 80.6 C reported a full-pipeline median
+    of 725.9 ms against a forward-only median of 768.2 ms -- a letterbox cost of
+    -42.3 ms, which cannot happen, because the full pipeline CONTAINS the
+    forward pass. Nothing was wrong with the model. The forward-only block
+    simply ran second, on a chip that had climbed to 82.7 C.
+
+    Interleaving gives both scopes the same thermal history, so the difference
+    stays valid however hot the board gets, and it costs nothing: the same
+    number of forward passes, in a different order.
+
+    The ORDER alternates too. Whichever scope runs second inherits the other's
+    cache and clock state, and always handing that position to the same scope
+    would put a systematic bias back in by the back door.
+    """
     import torch
     from PIL import Image
 
-    samples: list[float] = []
-    if not with_letterbox:
-        with Image.open(image_paths[0]) as img:
-            fixed = to_tensor(letterbox(img.convert("RGB")))
+    with Image.open(image_paths[0]) as img:
+        fixed = to_tensor(letterbox(img.convert("RGB")))
+
+    full: list[float] = []
+    forward: list[float] = []
 
     with torch.no_grad():
         for i in range(WARMUP + iterations):
             path = image_paths[i % len(image_paths)]
-            start = time.perf_counter()
-            if with_letterbox:
-                with Image.open(path) as img:          # file read
-                    tensor = to_tensor(letterbox(img.convert("RGB")))   # letterbox
+
+            def time_full():
+                start = time.perf_counter()
+                with Image.open(path) as img:                      # file read
+                    tensor = to_tensor(letterbox(img.convert("RGB")))  # letterbox
+                _predict(module, tensor)                           # forward
+                return (time.perf_counter() - start) * 1000.0
+
+            def time_forward():
+                start = time.perf_counter()
+                _predict(module, fixed)
+                return (time.perf_counter() - start) * 1000.0
+
+            if i % 2 == 0:
+                full_ms = time_full()
+                forward_ms = time_forward()
             else:
-                tensor = fixed
-            logits = module(tensor)                     # forward
-            while isinstance(logits, (tuple, list)):
-                logits = logits[0]
-            int(logits.argmax(dim=1).item())            # label
-            elapsed = (time.perf_counter() - start) * 1000.0
-            if i >= WARMUP:                             # discard the warm-up
-                samples.append(elapsed)
-    return samples
+                forward_ms = time_forward()
+                full_ms = time_full()
+
+            if i >= WARMUP:                            # discard the warm-up
+                full.append(full_ms)
+                forward.append(forward_ms)
+    return full, forward
+
+
+def letterbox_cost(full: dict, forward: dict) -> dict:
+    """The letterbox cost, or a refusal when the measurement is not physical.
+
+    The full pipeline contains the forward pass, so a negative difference is not
+    a fast letterbox: it is a failed measurement. Interleaving removes the cause
+    that produced one here, and this is the check that the cause stayed removed.
+    Reporting a failure costs a cell in a table; writing -42.3 ms into one costs
+    the reader's trust in every other number beside it.
+    """
+    difference = full["median_ms"] - forward["median_ms"]
+    if difference < 0:
+        return {
+            "ok": False,
+            "letterbox_ms": None,
+            "letterbox_share_pct": None,
+            "reason": (
+                "forward-only median (%.3f ms) EXCEEDS the full-pipeline median "
+                "(%.3f ms) by %.3f ms. The full pipeline contains the forward "
+                "pass, so this is a failed measurement, not a result. The scopes "
+                "are interleaved, so a drift big enough to survive that means "
+                "the host was unstable for another reason -- check the timed-run "
+                "temperatures and re-run on a cooler board."
+                % (forward["median_ms"], full["median_ms"], -difference)
+            ),
+        }
+    return {
+        "ok": True,
+        "letterbox_ms": round(difference, 3),
+        "letterbox_share_pct": round(100.0 * difference / full["median_ms"], 1),
+        "reason": None,
+    }
 
 
 def soak(module, image_paths: list[Path], minutes: float) -> dict:
@@ -467,7 +544,14 @@ def macro_f1(module, pairs: list[tuple[Path, int]], n_classes: int) -> dict:
 
 
 def quantise_int8(module):
-    """A dynamically quantised INT8 copy, or None with the reason."""
+    """A dynamically quantised INT8 copy, or None with the reason.
+
+    `torch.nn.Conv2d` is passed and IGNORED. quantize_dynamic converts Linear
+    and the RNN family only; naming Conv2d in the set neither works nor errors,
+    it simply does nothing. It is kept here so that the day dynamic conv support
+    lands, this picks it up -- and documented so nobody reads its presence as a
+    claim that convolutions were quantised.
+    """
     import torch
 
     try:
@@ -479,6 +563,93 @@ def quantise_int8(module):
         )
     except Exception as exc:  # noqa: BLE001
         return None, str(exc)
+
+
+def layer_census(module) -> dict[str, int]:
+    """How many leaf modules of each type, e.g. {"Conv2d": 20, "Linear": 1}."""
+    census: dict[str, int] = {}
+    for _, child in module.named_modules():
+        if list(child.children()):
+            continue                      # containers, not layers
+        name = type(child).__name__
+        census[name] = census.get(name, 0) + 1
+    return census
+
+
+def quantisation_coverage(fp32, quantised) -> dict:
+    """Which layer types quantize_dynamic actually converted, and which it left.
+
+    The manuscript's microcontroller argument rests on quantisation, so a reader
+    needs to know which architectures it can compress and which it cannot. Left
+    unexplained, resnet18's size ratio of 1.0 reads as a broken measurement. It
+    is not: dynamic quantisation converts Linear and the RNN family, ResNet18 is
+    almost entirely Conv2d, and 11.18 M of its 11.18 M parameters are therefore
+    untouched. A mobilenet head is a Linear, so it compresses a little. Nothing
+    here compresses the way an all-Linear model would.
+    """
+    before = layer_census(fp32)
+    converted: dict[str, int] = {}
+    originals = dict(fp32.named_modules())
+    for name, child in quantised.named_modules():
+        if not type(child).__module__.startswith(("torch.ao.nn.quantized",
+                                                  "torch.nn.quantized")):
+            continue
+        original = originals.get(name)
+        if original is None:
+            # Internal plumbing the conversion adds, e.g. fc._packed_params.
+            # It has no counterpart in the fp32 module and is not a layer.
+            continue
+        converted[type(original).__name__] = converted.get(
+            type(original).__name__, 0
+        ) + 1
+
+    quantised_params = 0
+    for name, child in fp32.named_modules():
+        if type(child).__name__ in converted and not list(child.children()):
+            quantised_params += sum(p.numel() for p in child.parameters(recurse=False))
+    total_params = sum(p.numel() for p in fp32.parameters())
+
+    untouched = {
+        layer: count
+        for layer, count in before.items()
+        if layer not in converted and count
+    }
+    return {
+        "layer_census": before,
+        "quantised_layer_types": converted or {},
+        "unquantised_layer_types": untouched,
+        "params_total": total_params,
+        "params_in_quantised_layers": quantised_params,
+        "params_quantised_pct": (
+            round(100.0 * quantised_params / total_params, 2) if total_params else None
+        ),
+        "method": "torch.ao.quantization.quantize_dynamic(dtype=qint8)",
+        "method_scope": (
+            "Dynamic quantisation converts Linear and the RNN family only. "
+            "Conv2d is NOT supported and is silently left in fp32, so a "
+            "convolution-dominated architecture is barely compressed and a size "
+            "ratio near 1.0 is the correct result, not a failed measurement."
+        ),
+    }
+
+
+def _describe_coverage(coverage: dict) -> str:
+    """One sentence naming what was quantised and what was not."""
+    converted = coverage.get("quantised_layer_types") or {}
+    untouched = coverage.get("unquantised_layer_types") or {}
+    if not converted:
+        return (
+            "no layer was quantised (%s left in fp32)"
+            % ", ".join("%d x %s" % (n, t) for t, n in sorted(untouched.items()))
+        )
+    return (
+        "quantised %s, covering %s %% of parameters; left %s in fp32"
+        % (
+            ", ".join("%d x %s" % (n, t) for t, n in sorted(converted.items())),
+            coverage.get("params_quantised_pct"),
+            ", ".join("%d x %s" % (n, t) for t, n in sorted(untouched.items())) or "nothing",
+        )
+    )
 
 
 def int8_report(module, out_path: Path, pairs, n_classes: int) -> dict:
@@ -510,6 +681,21 @@ def int8_report(module, out_path: Path, pairs, n_classes: int) -> dict:
         else None
     )
     fp32_path.unlink(missing_ok=True)
+
+    report["coverage"] = quantisation_coverage(module, quantised)
+    ratio = report["size_ratio"]
+    if ratio is not None and ratio > 0.95:
+        report["size_ratio_note"] = (
+            "A ratio this close to 1.0 means quantisation achieved essentially "
+            "nothing, and that is the CORRECT result for this architecture, not "
+            "a bug: %s. %s"
+            % (
+                _describe_coverage(report["coverage"]),
+                report["coverage"]["method_scope"],
+            )
+        )
+    else:
+        report["size_ratio_note"] = _describe_coverage(report["coverage"])
 
     if not pairs:
         report["accuracy_measured"] = False
@@ -851,10 +1037,27 @@ def main() -> int:
         module.eval()
 
         params = int(sum(p.numel() for p in module.parameters()))
-        full = stats(bench(module, image_paths, iterations, with_letterbox=True))
-        forward = stats(bench(module, image_paths, iterations, with_letterbox=False))
-        letterbox_ms = round(full["median_ms"] - forward["median_ms"], 3)
-        letterbox_share = round(100.0 * letterbox_ms / full["median_ms"], 1)
+
+        # The timed run is the part most at risk on a passively cooled board, so
+        # it gets its own temperature bracket rather than borrowing the soak's.
+        timed_start_c = read_temperature_c()
+        if timed_start_c is not None and timed_start_c >= THROTTLE_WARN_C:
+            print(
+                "  [WARNING] %s starts its timed run at %.1f C, at or above the "
+                "%.0f C\n            throttling threshold. Every latency below is "
+                "taken under\n            throttling and understates what this board "
+                "can do cool." % (arm, timed_start_c, THROTTLE_WARN_C)
+            )
+
+        full_samples, forward_samples = bench_interleaved(
+            module, image_paths, iterations
+        )
+        timed_end_c = read_temperature_c()
+        full = stats(full_samples)
+        forward = stats(forward_samples)
+        cost = letterbox_cost(full, forward)
+        letterbox_ms = cost["letterbox_ms"]
+        letterbox_share = cost["letterbox_share_pct"]
 
         out_dir = Path(args.out).parent
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -870,13 +1073,25 @@ def main() -> int:
         # smaller letterbox share on a Pi than on a workstation. The milliseconds
         # are the portable number; the percentage is only meaningful next to the
         # device block.
-        print("  letterbox cost  %8.3f ms  = %.1f %% of the full-pipeline median"
-              % (letterbox_ms, letterbox_share))
+        if cost["ok"]:
+            print("  letterbox cost  %8.3f ms  = %.1f %% of the full-pipeline median"
+                  % (letterbox_ms, letterbox_share))
+        else:
+            print("  letterbox cost  FAILED MEASUREMENT -- not reported")
+            print("      %s" % cost["reason"])
+        if timed_start_c is not None:
+            print("  timed-run temp  %8.1f -> %.1f C  (%+.1f)"
+                  % (timed_start_c, timed_end_c if timed_end_c is not None else float("nan"),
+                     (timed_end_c - timed_start_c) if timed_end_c is not None else float("nan")))
+        else:
+            print("  timed-run temp  not readable on this host")
         print("  peak RSS        %8s MB" % peak_rss_mb())
         if int8.get("available"):
             print("  int8 size       %8.3f MB  (fp32 %.3f, ratio %s)"
                   % (int8["int8_size_mb"], int8.get("fp32_size_mb", float("nan")),
                      int8.get("size_ratio")))
+            if int8.get("size_ratio_note"):
+                print("      %s" % int8["size_ratio_note"])
             if int8.get("accuracy_measured"):
                 print("  int8 macro-F1   %8.4f -> %.4f  (delta %+.4f over %d images)"
                       % (int8["macro_f1_fp32"], int8["macro_f1_int8"],
@@ -909,6 +1124,29 @@ def main() -> int:
             "forward_only": forward,
             "letterbox_ms": letterbox_ms,
             "letterbox_share_pct": letterbox_share,
+            "letterbox_measurement_ok": cost["ok"],
+            "letterbox_failure_reason": cost["reason"],
+            "scopes_interleaved": True,
+            "letterbox_method_note": (
+                "full-pipeline and forward-only are timed on the SAME iterations, "
+                "alternating, so thermal drift affects both equally and the "
+                "difference stays valid however hot the board gets. Measuring all "
+                "of one scope and then all of the other made the difference a "
+                "measurement of the drift between them."
+            ),
+            "timed_run_temperature_c": {
+                "start": timed_start_c,
+                "end": timed_end_c,
+                "delta": (
+                    round(timed_end_c - timed_start_c, 2)
+                    if None not in (timed_start_c, timed_end_c)
+                    else None
+                ),
+                "throttled_at_start": (
+                    None if timed_start_c is None else timed_start_c >= THROTTLE_WARN_C
+                ),
+                "threshold_c": THROTTLE_WARN_C,
+            },
             "letterbox_share_note": (
                 "share of the full-pipeline median on THIS host; it falls on a "
                 "slower CPU, where the forward pass grows more than the file read "
@@ -984,6 +1222,31 @@ def main() -> int:
     print("[artifacts] wrote %s" % out_path)
     if args.cooling == "unknown" and args.soak_minutes > 0:
         print("  Re-run with --cooling to make the thermal result reportable.")
+
+    hot = [
+        arm for arm, row in results.items()
+        if (row["timed_run_temperature_c"] or {}).get("throttled_at_start")
+    ]
+    if hot:
+        print(
+            "\n  [WARNING] %s began its timed run at or above %.0f C. Those latencies\n"
+            "            are throttled figures and understate the board when cool."
+            % (", ".join(sorted(hot)), THROTTLE_WARN_C)
+        )
+
+    # An assertion that never fails is not an assertion. The JSON is written
+    # first either way, so a failed scope comparison costs nothing already
+    # measured -- but the run does not report success.
+    failed = [arm for arm, row in results.items()
+              if not row.get("letterbox_measurement_ok", True)]
+    if failed:
+        print(
+            "\n  FAILED MEASUREMENT for %s: forward-only exceeded the full\n"
+            "  pipeline, which cannot happen. letterbox_ms is null in the JSON for\n"
+            "  these arms rather than negative. Everything else above stands."
+            % ", ".join(sorted(failed))
+        )
+        return 1
     return 0
 
 
