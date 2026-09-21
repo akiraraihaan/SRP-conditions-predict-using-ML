@@ -103,6 +103,13 @@ artifacts/*
 !artifacts/edge_benchmark.json
 # 07, the Pareto frontier recomputed on MEASURED latency rather than GFLOPs
 !artifacts/pareto_status_device.csv
+# 07, run per DEVICE. --out may point at a subdirectory so results from several
+# boards can sit side by side, and `artifacts/*` matches that directory, which
+# stops git descending into it at all. Un-ignoring the directory is enough --
+# its contents are not matched by `artifacts/*`, which is one level only.
+# One line per board. A device whose results are not listed here is silently
+# uncommittable, which is the failure this whole allowlist exists to catch.
+!artifacts/raspberry-pi-result/
 
 # publication figures. `artifacts/*` matches the directory but not its contents,
 # so un-ignoring the directory is enough to let git descend into it.

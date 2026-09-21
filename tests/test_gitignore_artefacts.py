@@ -46,6 +46,15 @@ COMMITTED = [
     ("artifacts/pareto_status.csv", "06", "Pareto frontier and domination"),
     ("artifacts/edge_benchmark.json", "07", "Raspberry Pi results"),
     ("artifacts/pareto_status_device.csv", "07", "frontier on measured latency"),
+    # 07 is run once per BOARD, with --out pointing at a subdirectory so several
+    # devices can sit side by side. `artifacts/*` matches that directory and
+    # stops git descending into it, so each board needs its own line in
+    # .gitignore. Without one, `git add` fails silently and the results of a run
+    # that took ten minutes on the hardware simply never reach the repository.
+    ("artifacts/raspberry-pi-result/edge_benchmark.json", "07",
+     "Raspberry Pi 3 results, --out subdirectory"),
+    ("artifacts/raspberry-pi-result/pareto_status_device.csv", "07",
+     "Raspberry Pi 3 measured-latency frontier"),
     ("artifacts/figures/fig_pareto.pdf", "06", "publication figure"),
     ("artifacts/figures/fig_pareto.png", "06", "publication figure"),
     ("artifacts/figures/fig_pareto_size.pdf", "06", "publication figure"),
