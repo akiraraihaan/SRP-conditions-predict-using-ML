@@ -1,6 +1,0 @@
-arm,f1_macro_mean,params,latency_median_ms,int8_size_mb,on_pareto_frontier,dominated_by,dominated_on
-resnet18,0.601989,11181642,777.322,42.717,True,,
-mobilenetv3_small,0.590005,1528106,146.048,4.246,True,,
-yolo26m,0.530062,10366026,1323.715,39.697,False,mobilenetv3_small,mobilenetv3_small:f1_macro_mean+params+latency_median_ms+int8_size_mb
-yolo26n,0.523075,1543914,212.517,5.972,False,mobilenetv3_small,mobilenetv3_small:f1_macro_mean+params+latency_median_ms+int8_size_mb
-yolo26s,0.503887,5455818,504.46,20.924,False,mobilenetv3_small; yolo26n,mobilenetv3_small:f1_macro_mean+params+latency_median_ms+int8_size_mb; yolo26n:f1_macro_mean+params+latency_median_ms+int8_size_mb
