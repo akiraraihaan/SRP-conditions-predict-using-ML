@@ -49,8 +49,8 @@ artifacts/        generated. gitignored EXCEPT folds.json and image_index.csv,
 | `01_complete_medium_grid.py` | the 8 medium configurations missing from the old grid, on the dev split; recomputes the medium winner; writes it back to `arms.yaml` | 8 |
 | `02_lr_sweep_baselines.py` | lr ∈ {1e-4, 1e-3, 1e-2} for the two baselines on the dev split; writes winners back to `arms.yaml` | 6 |
 | `03_run_cv.py` | the main experiment: 5 arms × 15 folds | 75 |
-| `04_run_ablation.py` | `class_weights: none` on `yolo26n`, same folds/seeds/epochs/batch/lr | 15 |
-| `05_learning_curve.py` | 20/40/60/80/100 % of each fold's training set, one draw per fold, under the **final locked** nano config | — |
+| `04_run_ablation.py` | `class_weights: none` on `configs/arms.yaml:ablation.arm` (currently `mobilenetv3_small`), same folds/seeds/epochs/batch/lr | 15 |
+| `05_learning_curve.py` | 20/40/60/80/100 % of each fold's training set, one draw per fold, under the **final locked** configuration of `configs/arms.yaml:learning_curve.arm` (currently `mobilenetv3_small`) | 75 |
 | `06_export_figures.py` | publication figures, vector PDF + high-resolution PNG | — |
 | `07_bench_edge.py` | standalone Raspberry Pi latency benchmark. No training, no CUDA. | — |
 

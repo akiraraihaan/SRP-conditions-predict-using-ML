@@ -438,6 +438,8 @@ def main() -> int:
                 metrics=test_metrics,
                 efficiency=efficiency,
                 wall_time_s=wall,
+                # Exactly the object the hash saw -- see docs/RUN_ID.md.
+                run_id_extra=spec["extra"],
                 determinism_status=result.determinism,
                 extra={
                     "key": spec["key"],

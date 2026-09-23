@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 """05 -- learning curve under the SELECTED arm's FINAL locked configuration.
 
+WHICH ARM: `configs/arms.yaml:learning_curve.arm`, currently mobilenetv3_small.
+It is NOT yolo26n and has not been since the uniform grid overturned the
+selection. Nothing in this file names an arm; anything that does -- a figure
+title, a README row -- goes stale the moment that key changes, which is exactly
+what happened to the learning-curve figure caption.
+
     python scripts/05_learning_curve.py
     python scripts/05_learning_curve.py --dry-run
 
@@ -18,10 +24,11 @@ adding independent information. See configs/arms.yaml:learning_curve.
 This is NOT a re-run of the old learning curve. The legacy one (code.ipynb cell
 18, "[Cell 19]") used batch 16 and **lr 1e-3** -- it indexed the option lists
 positionally and landed on the wrong learning rate despite a comment claiming
-"best hyperparams". The locked nano winner is lr 1e-2. The old curve therefore
-never described the model that was actually reported, and its cached numbers
-additionally carry the 14-class evaluation deflation. See MIGRATION_NOTES.md
-section 7.
+"best hyperparams". The locked winner is lr 1e-2 -- for yolo26n, which the old
+curve was built on, and for mobilenetv3_small, which this one is. The old curve
+therefore never described the model that was actually reported, and its cached
+numbers additionally carry the 14-class evaluation deflation. See
+MIGRATION_NOTES.md section 7.
 
 Subsample seeds are derived from (repeat, fold, fraction) so the curve is
 reproducible and every arm would see the same subsets if it were ever extended.
@@ -42,6 +49,7 @@ import pandas as pd  # noqa: E402
 from srpcard import data as srp_data  # noqa: E402
 from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
+from srpcard.efficiency import profile  # noqa: E402
 from srpcard.config import (  # noqa: E402
     artifacts_dir,
     load_arms_config,
@@ -207,6 +215,15 @@ def main() -> int:
         metrics = evaluate.evaluate_fold(
             bundle.module, cache, entry["test_idx"], labels_by_idx, data_cfg
         )
+        # Profiled like scripts 03 and 04, not left empty. `efficiency={}` wrote
+        # params, gflops and the whole size_mb family as null into all 75 of this
+        # script's records, and because those fields are architectural constants
+        # nothing downstream noticed until a Pareto table came back with holes.
+        # They are recoverable, but a run that can record them should.
+        # latency=True to match scripts 03 and 04 exactly. These records join
+        # the same tables, and a field set that differs by script forces every
+        # consumer to special-case which script wrote a row.
+        efficiency = profile(bundle.module, cfg.image_size, latency=True)
         wall = round(time.perf_counter() - started, 2)
         print("  -> test f1_macro %.4f  (%.1fs)" % (metrics["f1_macro"], wall))
 
@@ -232,8 +249,10 @@ def main() -> int:
                 corpus_fingerprint=corpus_fp,
                 training=registry.training_outcome(result),
                 metrics=metrics,
-                efficiency={},
+                efficiency=efficiency,
                 wall_time_s=wall,
+                # Exactly the object the hash saw -- see docs/RUN_ID.md.
+                run_id_extra=spec["extra"],
                 determinism_status=result.determinism,
                 extra={
                     "protocol": "uniform",

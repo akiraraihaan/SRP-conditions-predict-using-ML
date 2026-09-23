@@ -74,6 +74,34 @@ def load_arms_config() -> dict[str, Any]:
     return load_yaml(CONFIGS_DIR / "arms.yaml")
 
 
+def published_arms(arms_cfg: dict[str, Any]) -> list[str]:
+    """The arms of the PUBLISHED comparison, in config order.
+
+    Arms flagged `contrast_only: true` are excluded. They exist to answer a
+    question ABOUT the comparison -- a raised epoch budget, a swapped optimizer
+    -- and must never join it by default: every script that takes `--arms`
+    falls back to "all arms in the config", so adding a contrast arm to
+    configs/arms.yaml would otherwise turn the five-arm headline comparison
+    into a six-arm one, and grow paired_comparisons.csv from 10 pairs to 15,
+    as a side effect of asking a question about it.
+
+    Naming a contrast arm explicitly in --arms still runs it. This only changes
+    what "no --arms given" means.
+    """
+    return [
+        name for name, block in (arms_cfg.get("arms") or {}).items()
+        if not (block or {}).get("contrast_only")
+    ]
+
+
+def contrast_arms(arms_cfg: dict[str, Any]) -> list[str]:
+    """The complement of published_arms."""
+    return [
+        name for name, block in (arms_cfg.get("arms") or {}).items()
+        if (block or {}).get("contrast_only")
+    ]
+
+
 def artifacts_dir(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg or load_data_config()
     path = Path(cfg.get("artifacts_dir", "artifacts"))

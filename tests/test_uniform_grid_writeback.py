@@ -89,9 +89,15 @@ def test_the_file_still_parses_and_keeps_every_arm(grid, arms_file):
     for arm in ("yolo26n", "yolo26s", "yolo26m"):
         grid.write_back_winner(arm, 25, 8, 0.01, "k", 0.5, path=arms_file)
     parsed = yaml.safe_load(arms_file.read_text(encoding="utf-8"))
-    assert set(parsed["arms"]) == {
-        "yolo26n", "yolo26s", "yolo26m", "mobilenetv3_small", "resnet18",
-    }
+    # The invariant is that the writeback LOSES NOTHING, not that the file holds
+    # one particular set -- contrast arms are added over time and hardcoding the
+    # five here made this fail for the right file and the wrong reason.
+    original = yaml.safe_load(
+        (REPO_ROOT / "configs" / "arms.yaml").read_text(encoding="utf-8")
+    )
+    assert set(parsed["arms"]) == set(original["arms"])
+    assert {"yolo26n", "yolo26s", "yolo26m",
+            "mobilenetv3_small", "resnet18"} <= set(parsed["arms"])
     # the sections after the arms block must survive untouched
     for key in ("shared", "uniform_protocol", "medium_grid", "learning_curve"):
         assert key in parsed

@@ -28,6 +28,13 @@ psutil==7.2.2
 
 # --- statistics (Friedman / Nemenyi across folds) ---
 scikit-posthocs==0.13.0
+
+# --- near-duplicate audit (scripts/09_duplicate_audit.py) ---
+# Perceptual hashing. Byte-level duplication is already excluded; this catches
+# the leak sha1 cannot see -- two screenshots of the same card seconds apart.
+# 09 REFUSES to run without it rather than improvising a hash, because an
+# unvalidated one would produce a clean verdict nobody could trust.
+imagehash==4.3.2
 statsmodels==0.14.6
 
 # NOTE on torch: OLD_DIR pinned the CPU build. On Kaggle the CUDA build of the

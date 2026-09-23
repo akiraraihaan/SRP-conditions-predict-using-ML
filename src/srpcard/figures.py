@@ -8,6 +8,7 @@ units.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,37 @@ def set_render_provenance(enabled: bool) -> None:
     """Draw the provenance strip on the figure, or keep it to the metadata only."""
     global RENDER_PROVENANCE
     RENDER_PROVENANCE = bool(enabled)
+
+
+@contextmanager
+def provenance(block: dict | None, *, render: bool | None = None):
+    """Install a stamp for the duration of one figure, then put it back.
+
+    PROVENANCE and RENDER_PROVENANCE are module-level globals, which is what
+    makes `save()` able to stamp without every figure function taking a
+    provenance argument it never reads. The cost is that a caller which sets one
+    and raises leaves it installed, and the NEXT figure is then stamped with the
+    previous figure's record set -- the precise failure the per-artefact stamp
+    was introduced to prevent, reintroduced by the mechanism that implements it.
+
+    A test that sets the global and fails leaks it into every test after it in
+    the same process, which is how this was found.
+
+    Use this rather than set_provenance() wherever the stamp is meant to apply
+    to a bounded piece of work:
+
+        with figures.provenance(stamp):
+            figures.figure_pareto(summary, out_dir)
+    """
+    previous_block, previous_render = PROVENANCE, RENDER_PROVENANCE
+    set_provenance(block)
+    if render is not None:
+        set_render_provenance(render)
+    try:
+        yield block
+    finally:
+        set_provenance(previous_block)
+        set_render_provenance(previous_render)
 
 
 def _content_sha1_of(path: Path) -> str | None:
@@ -325,7 +357,18 @@ def figure_confusion(matrix, classes, out_dir: Path, name: str, title: str) -> l
     return save(fig, out_dir, name)
 
 
-def figure_learning_curve(summary, out_dir: Path) -> list[Path]:
+def sole_arm(records, *, fallback: str = "the locked") -> str:
+    """The one arm a set of registry records describes, else the fallback.
+
+    Figure titles must name the arm they were BUILT from. Hardcoding it survives
+    a retarget silently: the analysis follows configs/arms.yaml, the caption
+    does not, and the figure then states something the data never said.
+    """
+    arms = sorted({r.get("arm") for r in (records or []) if r.get("arm")})
+    return arms[0] if len(arms) == 1 else fallback
+
+
+def figure_learning_curve(summary, out_dir: Path, arm: str | None = None) -> list[Path]:
     """Mean +/- s.d. macro-F1 against training-set size."""
     import matplotlib.pyplot as plt
 
@@ -339,7 +382,16 @@ def figure_learning_curve(summary, out_dir: Path) -> list[Path]:
     ax.fill_between(x, y - err, y + err, alpha=0.15)
     ax.set_xlabel("training images per fold")
     ax.set_ylabel("test macro-F1 (mean $\\pm$ s.d.)")
-    ax.set_title("Learning curve under the locked yolo26n configuration")
+    # The arm is passed in from the RECORDS, never named in the string. This
+    # title said "yolo26n" for weeks after script 05 was retargeted at
+    # mobilenetv3_small (configs/arms.yaml:learning_curve.arm), so the figure
+    # captioned the wrong model while the numbers underneath were correct.
+    # artifacts/learning_curve.csv carries no arm column, which is why nothing
+    # caught it; the caller reads it from the registry instead.
+    ax.set_title(
+        "Learning curve under the locked %s configuration" % arm
+        if arm else "Learning curve under the locked configuration"
+    )
     return save(fig, out_dir, "fig_learning_curve")
 
 
@@ -381,6 +433,64 @@ def figure_ablation(paired, per_class, out_dir: Path) -> list[Path]:
 
     fig.tight_layout()
     return save(fig, out_dir, "fig_ablation")
+
+
+def figure_taxonomy_pairs(pairs, arm: str, out_dir: Path) -> list[Path]:
+    """All 45 single-pair merges for one arm, ranked, with the control visible.
+
+    The point of the figure is the CONTROL, not the hypothesis. Merging any two
+    of ten classes raises macro-F1 for free, so a bar chart of the proposed
+    merges alone would prove nothing. Drawing all 45 with the baseline and the
+    median marked shows whether the hypothesised pairs sit above the
+    distribution or inside it -- which is the whole claim.
+    """
+    import matplotlib.pyplot as plt
+
+    _style()
+    block = pairs[pairs["arm"] == arm].sort_values("gain_mean", ascending=True)
+    if block.empty:
+        return []
+
+    values = block["macro_f1_mean"].to_numpy(dtype=float)
+    labels = [
+        "%s + %s" % (a.replace("_", " "), b.replace("_", " "))
+        for a, b in zip(block["class_a"], block["class_b"])
+    ]
+    hypothesised = [bool(h) for h in block["hypothesised"].fillna("")]
+
+    fig, ax = plt.subplots(figsize=(7.2, 9.0))
+    positions = np.arange(len(values))
+    colours = ["tab:orange" if h else "tab:blue" for h in hypothesised]
+    ax.barh(positions, values, color=colours, height=0.78)
+
+    # gain = merged - baseline, and the baseline is the same for every row, so
+    # any row recovers it. Taking it from one row rather than from two separate
+    # minima keeps that obvious.
+    baseline = float(block["macro_f1_mean"].iloc[0] - block["gain_mean"].iloc[0])
+    median = float(np.median(values))
+    ax.axvline(baseline, color="black", linewidth=1.2,
+               label="baseline, 10 classes (%.4f)" % baseline)
+    ax.axvline(median, color="tab:red", linestyle="--", linewidth=1.2,
+               label="median of all 45 merges (%.4f)" % median)
+
+    ax.set_yticks(positions)
+    ax.set_yticklabels(labels, fontsize=6.5)
+    ax.set_ylim(-0.7, len(values) - 0.3)
+    ax.set_xlim(left=min(baseline, values.min()) - 0.004)
+    ax.set_xlabel("macro-F1 after merging the pair (mean over 15 folds)")
+    ax.set_title("Every possible single-pair merge, %s" % arm.replace("_", " "))
+
+    from matplotlib.patches import Patch
+
+    ax.legend(
+        handles=[
+            Patch(facecolor="tab:orange", label="hypothesised merge"),
+            Patch(facecolor="tab:blue", label="the other 43"),
+        ] + ax.get_legend_handles_labels()[0],
+        fontsize=7, loc="lower right",
+    )
+    fig.tight_layout()
+    return save(fig, out_dir, "fig_taxonomy_pairs_%s" % arm)
 
 
 def figure_selected_epochs(epochs, out_dir: Path) -> list[Path]:

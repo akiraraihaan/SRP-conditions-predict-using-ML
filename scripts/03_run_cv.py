@@ -27,6 +27,7 @@ from srpcard import data as srp_data  # noqa: E402
 from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import (  # noqa: E402
+    published_arms,
     artifacts_dir,
     hardware,
     library_versions,
@@ -35,7 +36,7 @@ from srpcard.config import (  # noqa: E402
     resolve_data_root,
 )
 from srpcard.efficiency import profile  # noqa: E402
-from srpcard.models import ARM_NAMES, add_fallback_argument, build_model  # noqa: E402
+from srpcard.models import add_fallback_argument, build_model  # noqa: E402
 from srpcard.train import (  # noqa: E402
     ImageCache,
     TrainConfig,
@@ -45,6 +46,21 @@ from srpcard.train import (  # noqa: E402
 )
 
 SCRIPT = "03_run_cv"
+
+# Contrast runs go under their OWN script name, and that is the whole mechanism
+# keeping them out of the published comparison.
+#
+# `aggregate.cv_records()` selects on `script == "03_run_cv"`, so every summary
+# table, the Pareto frontier and the paired comparisons are built from that name
+# alone. A contrast arm added to configs/arms.yaml and run under the same name
+# would silently turn the five-arm headline comparison into a six-arm one and
+# grow paired_comparisons.csv from 10 pairs to 15 -- changing published tables
+# as a side effect of asking a question about them.
+#
+# `script` is in RUN_ID_FIELDS, so this also guarantees a distinct run_id, and
+# the hyperparameter-drift guard scopes on script, so the two regimes are never
+# pooled.
+CONTRAST_SCRIPT = "03b_contrast"
 
 
 def benchmark_fold(arms_cfg) -> tuple[int, int]:
@@ -153,8 +169,11 @@ def emit_weights_for_completed(out_dir, specs, *, tolerance, arms_cfg, data_cfg,
         bundle = build_model(spec["arm"], arms_cfg, data_cfg, with_efficiency=False,
                              seed=spec["run_seed"],
                              allow_pretrained_fallback=allow_fallback)
-        cfg = TrainConfig.from_arm(spec["arm"], arms_cfg, epochs=spec["epochs"],
-                                   class_weights=spec["class_weights"])
+        cfg = TrainConfig.from_arm(
+            spec["arm"], arms_cfg, epochs=spec["epochs"],
+            class_weights=spec["class_weights"],
+            **({"optimizer": spec["optimizer"]} if spec.get("optimizer") else {}),
+        )
         started = time.perf_counter()
         result = train_fold(bundle, cache, entry["train_idx"], entry["val_idx"],
                             labels_by_idx, cfg, seed=spec["run_seed"],
@@ -222,7 +241,41 @@ def main() -> int:
     parser.add_argument("--device", default=None, help="cuda | cpu (default: auto)")
     parser.add_argument("--epochs", type=int, default=None, help="override epochs (smoke tests)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
+    parser.add_argument(
+        "--explain-run-id",
+        action="store_true",
+        help=(
+            "print the identity fields and the resulting hash for each planned "
+            "run, then exit. A run_id is opaque by design, so 'why was this "
+            "skipped' cannot be answered by looking at one. Use it to confirm a "
+            "new arm or optimizer really does get a distinct identity BEFORE "
+            "spending GPU hours discovering that it did not."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress per-epoch lines")
+    parser.add_argument(
+        "--contrast",
+        action="store_true",
+        help=(
+            "record under %s instead of %s. For fairness checks -- a raised "
+            "epoch budget, a swapped optimizer -- that must sit BESIDE the "
+            "published comparison rather than inside it. Requires --arms, so a "
+            "contrast run can never be started for the whole arm set by "
+            "accident." % (CONTRAST_SCRIPT, SCRIPT)
+        ),
+    )
+    parser.add_argument(
+        "--optimizer",
+        default=None,
+        help=(
+            "OVERRIDE the optimizer configs/arms.yaml declares for the arm. "
+            "Absent means the arm's own choice, which is what every record so "
+            "far used. An override enters run_id, so the run sits beside the "
+            "arm's existing records rather than being skipped as a duplicate. "
+            "Note that yolo26n/s/m already declare MuSGD: the contrast run for "
+            "those arms is --optimizer SGD, not the other way round."
+        ),
+    )
     parser.add_argument(
         "--save-weights",
         default=None,
@@ -260,13 +313,38 @@ def main() -> int:
     add_fallback_argument(parser)
     args = parser.parse_args()
 
+    script = CONTRAST_SCRIPT if args.contrast else SCRIPT
+    if args.contrast and not args.arms:
+        print(
+            "--contrast requires --arms.\n"
+            "  A contrast is a question about one or two arms; running it across "
+            "the whole\n  set would spend hours producing records nothing is "
+            "waiting for."
+        )
+        return 2
+    if args.optimizer and not args.contrast:
+        print(
+            "--optimizer requires --contrast.\n"
+            "  Overriding the optimizer produces a run that is NOT the published "
+            "arm, so it\n  must not be recorded under %s. Add --contrast." % SCRIPT
+        )
+        return 2
+
     data_cfg = load_data_config()
     arms_cfg = load_arms_config()
 
-    arms = args.arms or [a for a in arms_cfg["arms"]]
-    unknown = [a for a in arms if a not in ARM_NAMES]
+    # Not "every arm in the config": an arm flagged contrast_only exists to ask
+    # a question ABOUT this comparison and must be named explicitly to run.
+    arms = args.arms or published_arms(arms_cfg)
+    # Validated against configs/arms.yaml, which is the authority -- NOT against
+    # models.ARM_NAMES, which lists the five published arms only. build_model
+    # already dispatches on the config's `backend`, so any arm defined there
+    # builds; a hardcoded list here simply refused contrast arms that work.
+    known = list(arms_cfg["arms"])
+    unknown = [a for a in arms if a not in known]
     if unknown:
-        print("Unknown arm(s) %s. Known: %s" % (unknown, ARM_NAMES))
+        print("Unknown arm(s) %s. configs/arms.yaml defines: %s"
+              % (unknown, sorted(known)))
         return 2
 
     rule("03 -- cross-validated experiment")
@@ -304,7 +382,7 @@ def main() -> int:
             spec = {
                 "arm": arm,
                 "architecture": arm_cfg["architecture"],
-                "script": SCRIPT,
+                "script": script,
                 "split_kind": "cv",
                 "repeat": entry["repeat"],
                 "fold": entry["fold"],
@@ -314,15 +392,37 @@ def main() -> int:
                 "class_weights": arms_cfg["shared"]["class_weights"],
                 "run_seed": entry["run_seed"],
                 "val_seed": entry["val_seed"],
+                # The OVERRIDE, not the arm's own choice. yolo26n/s/m declare
+                # optimizer: MuSGD in configs/arms.yaml and always have, so
+                # hashing the declared value would change the identity of all
+                # 45 YOLO records in this script. None means "whatever the arm
+                # declares" and is omitted from the hash; --optimizer makes a
+                # deliberate deviation into a distinct run. See
+                # registry.IDENTITY_NEUTRAL_DEFAULTS.
+                "optimizer": args.optimizer,
                 "extra": None,
                 "_entry": entry,
             }
             spec["run_id"] = registry.compute_run_id(**spec)
             specs.append(spec)
 
+    if args.explain_run_id:
+        rule("run identity")
+        for spec in specs:
+            identity = {k: v for k, v in spec.items()
+                        if k not in ("_entry", "run_id")}
+            print()
+            print(registry.explain_run_id(**identity))
+        print(
+            "\n%d run(s) shown. A run whose hash already appears in the registry "
+            "is SKIPPED,\nso two runs meant to be compared must differ in at least "
+            "one field above." % len(specs)
+        )
+        return 0
+
     bench_fold = benchmark_fold(arms_cfg)
     todo, skipped = registry.plan_runs(specs)
-    registry.print_plan(SCRIPT, todo, skipped)
+    registry.print_plan(script, todo, skipped)
     if args.save_weights or args.emit_weights:
         print("[weights] benchmark fold is repeat %d fold %d "
               "(configs/arms.yaml:reporting.benchmark_fold)" % bench_fold)
@@ -369,7 +469,7 @@ def main() -> int:
     # with the ones completed runs of the same arm were trained under. epochs,
     # batch and lr feed the run_id hash, so drift does not resume -- it duplicates.
     registry.assert_arms_match_registry(
-        script=SCRIPT, arms=arms, arms_cfg=arms_cfg, split_kind="cv"
+        script=script, arms=arms, arms_cfg=arms_cfg, split_kind="cv"
     )
 
     # Not fatal: folds on different cards are valid runs, and free-tier compute
@@ -380,7 +480,7 @@ def main() -> int:
     # Once per invocation, before any training. Aborts if the balanced weights
     # do not actually reach the loss; the compact proof goes into every record.
     weights_proof = require_class_weights_verified(
-        int(arms_cfg["shared"]["num_classes"]), script=SCRIPT
+        int(arms_cfg["shared"]["num_classes"]), script=script
     )
 
     # ---- reproduce completed runs, purely to write their weights ----
@@ -439,8 +539,13 @@ def main() -> int:
                 else "",
             )
         )
+        # The override reaches the trainer through the same key it reached the
+        # hash through, so a run whose identity says "musgd" cannot train with
+        # anything else.
         cfg = TrainConfig.from_arm(
-            spec["arm"], arms_cfg, epochs=spec["epochs"], class_weights=spec["class_weights"]
+            spec["arm"], arms_cfg, epochs=spec["epochs"],
+            class_weights=spec["class_weights"],
+            **({"optimizer": spec["optimizer"]} if spec.get("optimizer") else {}),
         )
         started = time.perf_counter()
         result = train_fold(
@@ -475,7 +580,7 @@ def main() -> int:
 
         record = registry.build_record(
             run_id=spec["run_id"],
-            script=SCRIPT,
+            script=script,
             arm=spec["arm"],
             architecture=spec["architecture"],
             split_kind="cv",
@@ -496,6 +601,9 @@ def main() -> int:
             metrics=metrics,
             efficiency=efficiency,
             wall_time_s=wall,
+            # Exactly the object the hash saw -- see docs/RUN_ID.md.
+            run_id_extra=spec["extra"],
+            run_id_optimizer=spec.get("optimizer"),
             determinism_status=result.determinism,
             extra={
                 # Scopes the drift guard: records from script 01 (legacy

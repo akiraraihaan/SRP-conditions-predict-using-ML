@@ -47,8 +47,41 @@ RUN_ID_FIELDS = (
     "lr",
     "class_weights",
     "run_seed",
+    # The optimizer decides what the run IS, not how it turned out. Leaving it
+    # out meant a MuSGD run of an arm already in the registry computed the same
+    # run_id as its SGD twin -- so resume would skip it and the comparison could
+    # never be made.
+    "optimizer",
     "extra",
 )
+
+# Values that are OMITTED from the identity payload rather than hashed.
+#
+# This is what lets a field be ADDED to RUN_ID_FIELDS without invalidating the
+# records already written. `compute_run_id` used to serialise every field,
+# absent ones included, as an explicit null -- so simply appending "optimizer"
+# would have changed the hash of all 234 existing records, made every completed
+# fold unresumable, and silently proposed re-running the entire campaign.
+#
+# WHAT `optimizer` MEANS HERE: an OVERRIDE of the optimizer the arm declares in
+# configs/arms.yaml, not the optimizer that was used. The arm's own choice is
+# already pinned by `arm` plus the config snapshot in resolved_arms.yaml, so
+# hashing it again would be redundant -- and it would be wrong, because it is
+# not what the existing records were hashed with.
+#
+# That distinction is not cosmetic. yolo26n, yolo26s and yolo26m declare
+# `optimizer: MuSGD` and always have, so "absent means SGD" would have changed
+# the identity of all 45 YOLO records in script 03 and quietly proposed
+# re-running them. None means "whatever the arm declares"; anything else is a
+# deliberate deviation and gets its own identity.
+# tests/test_run_id_identity.py pins both halves.
+IDENTITY_NEUTRAL_DEFAULTS = {"optimizer": (None,)}
+
+# Keys `extra` must carry. protocol separates the legacy augmented runs from the
+# uniform ones and now from the native-recipe ones, and the hyperparameter-drift
+# guard scopes on it -- a record without it is pooled with a regime it does not
+# belong to, which is how the guard once proposed deleting nine good records.
+REQUIRED_EXTRA_FIELDS = ("protocol",)
 
 
 # Every field a record must carry to be readable as CURRENT-schema. Presence is
@@ -141,11 +174,53 @@ def training_outcome_absent(reason: str, *, epochs_run: int | None = None) -> di
     return block
 
 
+def run_id_payload(**params: Any) -> dict[str, Any]:
+    """The exact dict that gets hashed. Separated out so it can be shown.
+
+    A run_id is opaque by design, which makes "why did this run not resume"
+    impossible to answer by looking at it. `--explain-run-id` prints this.
+    """
+    payload: dict[str, Any] = {}
+    for key in RUN_ID_FIELDS:
+        value = params.get(key)
+        neutral = IDENTITY_NEUTRAL_DEFAULTS.get(key)
+        if neutral is not None:
+            canonical = value if value is None else str(value).lower()
+            if canonical in neutral:
+                continue          # identity-neutral: omit, preserving old hashes
+            value = canonical
+        payload[key] = value
+    return payload
+
+
 def compute_run_id(**params: Any) -> str:
     """Deterministic id from the run-defining parameters only."""
-    payload = {key: params.get(key) for key in RUN_ID_FIELDS}
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(
+        run_id_payload(**params), sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]  # noqa: S324
+
+
+def explain_run_id(**params: Any) -> str:
+    """The identity fields and the resulting hash, as printable text."""
+    payload = run_id_payload(**params)
+    omitted = [k for k in RUN_ID_FIELDS if k not in payload]
+    lines = ["run_id : %s" % compute_run_id(**params), "", "identity fields:"]
+    for key in RUN_ID_FIELDS:
+        if key in payload:
+            lines.append("    %-16s %s" % (key, json.dumps(payload[key], default=str)))
+    if omitted:
+        lines += [
+            "",
+            "omitted as identity-neutral (this is what preserves the hashes of",
+            "records written before the field existed):",
+        ]
+        for key in omitted:
+            lines.append(
+                "    %-16s %r -- the arm's own choice, already pinned by `arm`"
+                % (key, params.get(key))
+            )
+    return "\n".join(lines)
 
 
 def registry_path(cfg: dict[str, Any] | None = None) -> Path:
@@ -178,8 +253,18 @@ def completed_run_ids(path: Path | None = None) -> set[str]:
 
 
 def missing_fields(record: dict[str, Any]) -> list[str]:
-    """Which REQUIRED_RECORD_FIELDS this record does not carry."""
-    return [field for field in REQUIRED_RECORD_FIELDS if field not in record]
+    """Which REQUIRED_RECORD_FIELDS this record does not carry.
+
+    `extra.protocol` is reported as a missing field in its own right. It decides
+    which regime a record belongs to, and the hyperparameter-drift guard scopes
+    on it -- a record without one is pooled with a regime it was never part of.
+    """
+    missing = [field for field in REQUIRED_RECORD_FIELDS if field not in record]
+    extra = record.get("extra")
+    for key in REQUIRED_EXTRA_FIELDS:
+        if not isinstance(extra, dict) or key not in extra:
+            missing.append("extra.%s" % key)
+    return missing
 
 
 def audit_registry(path: Path | None = None) -> dict[str, Any]:
@@ -414,6 +499,8 @@ def build_record(
     metrics: dict[str, Any],
     efficiency: dict[str, Any],
     wall_time_s: float,
+    run_id_extra: Any,
+    run_id_optimizer: str | None = None,
     determinism_status: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -435,6 +522,26 @@ def build_record(
       time by every consumer of folds.json; recorded here so the result carries it.
     - `training` -- the uniform-protocol outcome, from `training_outcome(result)`
       or `training_outcome_absent(reason)`.
+    - `run_id_extra` -- the value that was hashed as `extra`, which is NOT the
+      `extra` dict this record stores. Required, with no default, because a
+      record that cannot reproduce its own run_id is not reproducible in any
+      sense that matters. See docs/RUN_ID.md.
+
+    THE IDENTITY GAP THIS CLOSES. `extra` is one of RUN_ID_FIELDS, but every
+    script hashes a short string marker ("uniform_grid", "lc_frac0.20", or None)
+    while recording a rich dict under the same key. Verifying a stored run_id
+    therefore meant reading the source of the script that wrote it -- and
+    guessing those markers wrong is exactly how 144 of 234 records once looked
+    unverifiable when they were not. Pass the SAME object the spec was hashed
+    with and the record becomes self-verifying by construction:
+
+        run_id = registry.compute_run_id(**spec)
+        ...
+        registry.build_record(..., run_id_extra=spec["extra"])
+
+    Existing records are NOT backfilled. The registry is append-only, and a
+    harmless-looking rewrite of 234 lines is exactly the change that loses
+    something quietly.
     """
     _hardware = hardware()
     return {
@@ -501,7 +608,14 @@ def build_record(
         "git_commit": git_commit(),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "library_versions": library_versions(),
-        "extra": extra or {},
+        # `run_id_extra` is what the hash SAW; `extra` is what the run wants to
+        # say about itself. They are different objects under one name, and that
+        # is the whole reason this field exists.
+        "extra": {
+            **(extra or {}),
+            "run_id_extra": run_id_extra,
+            "run_id_optimizer": run_id_optimizer,
+        },
     }
 
 

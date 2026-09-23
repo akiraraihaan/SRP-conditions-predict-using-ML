@@ -79,6 +79,7 @@ import numpy as np  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from srpcard.config import (  # noqa: E402
+    published_arms,
     artifacts_dir,
     load_arms_config,
     load_data_config,
@@ -978,7 +979,7 @@ def main() -> int:
     data_cfg = load_data_config()
     arms_cfg = load_arms_config()
     classes = list(data_cfg["classes"])
-    all_arms = sorted(arms_cfg["arms"])
+    all_arms = sorted(published_arms(arms_cfg))
     arms = args.arms or all_arms
     unknown = [a for a in arms if a not in all_arms]
     if unknown:

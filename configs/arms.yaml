@@ -31,6 +31,37 @@ arms:
     locked: true
     lr_source: "uniform_grid:01b:n_ep25_bs16_lr1e-03 (f1_macro_val=0.6017, 18/18 grid, dev split, UNIFORM protocol: no augmentation, class weights applied, val-macro-F1 selection; written by 01b_uniform_grid.py)"
 
+  # ---------------------------------------------------------------- C1
+  # Not a sixth model. The SAME architecture, weights, optimizer, batch and
+  # learning rate as yolo26n, with the epoch budget raised from 25 to 50 so it
+  # matches the other four arms.
+  #
+  # Why it exists: the uniform grid locked nano at 25 epochs while every other
+  # arm got 50, and appendix C shows yolo26n selecting its best weights at a
+  # mean of 80 % of its budget with nine folds at >= 96 %. It is the only arm
+  # that looks budget-constrained, so "YOLO26 loses" and "YOLO26 was stopped
+  # early" are not yet distinguishable. This separates them.
+  #
+  # It does NOT replace yolo26n. Both run, both stay in the registry, and the
+  # locked arm remains the one the grid selected -- raising the budget after
+  # seeing the CV result would be selection on test data.
+  yolo26n_ep50:
+    # Excluded from the DEFAULT arm set. Scripts that take --arms fall back to
+    # "every arm in this file", so without this flag `python scripts/03_run_cv.py`
+    # would quietly make the five-arm headline comparison a six-arm one and grow
+    # paired_comparisons.csv from 10 pairs to 15. Name it explicitly to run it:
+    #   python scripts/03_run_cv.py --contrast --arms yolo26n_ep50
+    contrast_only: true
+    architecture: yolo26n-cls
+    backend: ultralytics
+    pretrained_fallback: yolo11n-cls.pt
+    optimizer: MuSGD
+    epochs: 50
+    batch: 16
+    lr: 0.001
+    locked: true
+    lr_source: "inherited from yolo26n (uniform_grid:01b:n_ep25_bs16_lr1e-03); ONLY the epoch budget differs, 25 -> 50. Not itself a grid winner and must not be described as one."
+
   yolo26s:
     architecture: yolo26s-cls
     backend: ultralytics

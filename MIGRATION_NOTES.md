@@ -449,9 +449,15 @@ Cached results, `code.ipynb` **cell 19** `["[Cell 19b]"]`, hard-coded:
 | 0.8 | 444 | 0.6152 |
 | 1.0 | 556 | 0.6880 |
 
-**Not reusable.** Script `05_learning_curve.py` re-runs under the final locked nano
-configuration (ep50, bs16, **lr 1e-2**), over the CV folds, 3 repeats, reporting mean
-and std. The table above is recorded only to document what is being replaced.
+**Not reusable.** Script `05_learning_curve.py` re-runs under the final locked
+configuration of `configs/arms.yaml:learning_curve.arm` (ep50, bs16, **lr 1e-2**),
+over the CV folds, reporting mean and std. The table above is recorded only to
+document what is being replaced.
+
+> **Retargeted.** That arm was `yolo26n` when this section was written and is
+> `mobilenetv3_small` now (section 17). The hyperparameters are unchanged --
+> both arms lock to ep50/bs16/lr 1e-2 -- so only the model differs. The 75
+> records in the registry are mobilenetv3_small.
 
 ---
 

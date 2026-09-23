@@ -46,6 +46,12 @@ class ArchitectureMismatchError(RuntimeError):
     """
 
 
+# The five PUBLISHED arms. configs/arms.yaml is the authority on what exists --
+# `build_model` dispatches on the config's `backend` and builds any arm defined
+# there, contrast arms included. These constants describe the headline
+# comparison, and must not be used to decide whether an arm is valid: doing so
+# refused yolo26n_ep50, an arm that builds and trains perfectly well.
+# See config.published_arms() / config.contrast_arms().
 YOLO_ARMS = {"yolo26n", "yolo26s", "yolo26m"}
 TORCHVISION_ARMS = {"mobilenetv3_small", "resnet18"}
 ARM_NAMES = sorted(YOLO_ARMS | TORCHVISION_ARMS)

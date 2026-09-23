@@ -765,6 +765,86 @@ Only what git never held needs `backfill_efficiency.py`. That script now:
   value for every architecture and field, and the competing values for every
   field it excluded, before anything is written.
 
+
+## 4.12 Fairness checks, and why they are not arms
+
+Three runs answer "was YOLO26 handicapped?", and none of them belongs in the
+published comparison.
+
+| question | run | records under |
+| --- | --- | --- |
+| C1, epoch budget | `yolo26n_ep50`, 15 folds | `03b_contrast` |
+| C2, optimizer | `yolo26n --optimizer SGD`, 5 folds | `03b_contrast` |
+| C2, the cross | `mobilenetv3_small --optimizer musgd`, 5 folds | `03b_contrast` |
+| C2, native recipe | `03c_native_recipe.py`, 5 folds | `03c_native_recipe` |
+
+**Two mechanisms keep them out, and both are needed.**
+
+`aggregate.cv_records()` selects on `script == "03_run_cv"`, so recording under
+`03b_contrast` keeps every summary table, the Pareto frontier and the paired
+comparisons untouched. `--contrast` sets that name and requires `--arms`.
+
+But `--arms` defaults to "every arm in configs/arms.yaml", so adding
+`yolo26n_ep50` to the config alone would have made `python scripts/03_run_cv.py`
+plan six arms. `contrast_only: true` plus `config.published_arms()` closes that.
+Naming the arm explicitly still runs it.
+
+### The optimizer was already confounded
+
+```yaml
+yolo26n, yolo26s, yolo26m:      optimizer: MuSGD
+mobilenetv3_small, resnet18:    optimizer: SGD
+```
+
+Every YOLO run used MuSGD; every baseline used SGD. So "YOLO26 loses" and
+"MuSGD loses" are not separable from the published records alone, and running
+YOLO with SGD does not separate them either -- it only says what happens when
+YOLO loses MuSGD. The cross has to go both ways, which is why
+`mobilenetv3_small --optimizer musgd` exists. `scripts/11_recipe_check.py`
+refuses to state a conclusion until that cell is present.
+
+### The native row is not one variable changed
+
+`03c_native_recipe.py` trains through Ultralytics' own trainer AND evaluates
+through their own inference preprocessing. Evaluating a natively trained model
+through our letterbox would show it a transform it never trained on and
+manufacture the result the run exists to test.
+
+Held common: the fold partition, the class-index mapping (resolved through the
+trained model's own `names`), and the metric code. Everything else differs, and
+`yolo_recipe_check.csv` carries a `preprocessing` column -- `letterbox_224`
+against `ultralytics_default` -- so nobody reads the table as an
+apples-to-apples preprocessing comparison.
+
+Checkpoint selection differs too and is reported per fold rather than absorbed
+into "the recipe": theirs is fitness-based, ours is validation macro-F1.
+
+### Disk
+
+The Ultralytics trainer wants `root/split/class/*`. It is built under
+`--work-dir`, which defaults to a temp directory on LOCAL disk and is asserted
+never to sit inside `--data-root`. Trees are copied, not symlinked, and removed
+afterwards. Copy the dataset off the Drive mount first: caching 668 letterboxed
+images from Drive took 290 seconds, and this path reads them repeatedly.
+
+## 4.13 Quantisation is size and accuracy, never latency
+
+`scripts/10_quantise.py` measures dynamic PTQ (Linear only, the method the edge
+benchmark used) against static PTQ (fuses and calibrates, and does quantise
+convolutions), plus macro-F1 for all three states on the benchmark fold's test
+partition.
+
+Calibration runs on the fold's TRAINING partition only, asserted in code.
+
+**Nothing in `quantisation.csv` was timed.** Latency lives in
+`artifacts/raspberry-pi-result/edge_benchmark.json` and nowhere else; a test
+fails if `10_quantise.py` ever imports a timer.
+
+One trap worth knowing: `torch 2.12.0+cpu` reports
+`supported_engines == ["onednn"]`, so a backend list of just fbgemm/qnnpack
+reports "static PTQ unavailable" on a machine that supports it perfectly well.
+The script takes any engine the build offers.
+
 ## 5. Things to look at before writing the methods section
 
 1. **`selected_epoch` distribution.** `artifacts/selected_epochs.csv` and

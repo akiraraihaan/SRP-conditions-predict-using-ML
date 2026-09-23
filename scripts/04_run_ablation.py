@@ -205,6 +205,8 @@ def main() -> int:
                     metrics=metrics,
                     efficiency=efficiency,
                     wall_time_s=wall,
+                    # Exactly the object the hash saw -- docs/RUN_ID.md.
+                    run_id_extra=spec["extra"],
                     determinism_status=result.determinism,
                     extra={
                         "protocol": "uniform",

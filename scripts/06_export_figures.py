@@ -294,10 +294,44 @@ def main() -> int:
     if lc_path.exists():
         lc_records = aggregate.records_for_script("05_learning_curve")
         stamped(lc_records, sources=["artifacts/learning_curve.csv"])
-        written += figures.figure_learning_curve(pd.read_csv(lc_path, comment="#"), out_dir)
+        # The arm comes from the RECORDS, not from a string in the plotting
+        # code: artifacts/learning_curve.csv has no arm column, so a retarget in
+        # configs/arms.yaml moved the analysis and left the caption behind.
+        written += figures.figure_learning_curve(
+            pd.read_csv(lc_path, comment="#"), out_dir,
+            arm=figures.sole_arm(lc_records),
+        )
         print("[fig] learning curve (%d records from 05)" % len(lc_records))
     else:
         skipped.append("learning curve: artifacts/learning_curve.csv (run scripts/05_learning_curve.py)")
+
+    # ---- 5b. taxonomy merge control ----
+    #
+    # Produced by scripts/08_recompute_from_registry.py, which needs no training
+    # and no images. The figure shows ALL 45 single-pair merges, not just the
+    # proposed ones: merging any two of ten classes raises macro-F1 for free, so
+    # the hypothesis means nothing without the rest of the distribution beside
+    # it. Built from the 03_run_cv records, since that is what the merges were
+    # recomputed from.
+    pairs_path = artifacts_dir(data_cfg) / "taxonomy_merge_pairs.csv"
+    if pairs_path.exists():
+        detailed = (arms_cfg.get("reporting") or {}).get("detailed_arm")
+        if not detailed:
+            skipped.append(
+                "taxonomy merge ranking: configs/arms.yaml has no "
+                "reporting.detailed_arm"
+            )
+        else:
+            stamped(records, sources=["artifacts/taxonomy_merge_pairs.csv"])
+            written += figures.figure_taxonomy_pairs(
+                pd.read_csv(pairs_path, comment="#"), detailed, out_dir
+            )
+            print("[fig] taxonomy merge ranking (%s, all 45 pairs)" % detailed)
+    else:
+        skipped.append(
+            "taxonomy merge ranking: artifacts/taxonomy_merge_pairs.csv "
+            "(run scripts/08_recompute_from_registry.py)"
+        )
 
     # ---- 6. ablation ----
     paired_path = artifacts_dir(data_cfg) / "ablation_paired.csv"

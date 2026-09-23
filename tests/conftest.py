@@ -57,17 +57,41 @@ def arms_file(tmp_path: Path) -> Path:
     return target
 
 
+def _artifact_state(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file under artifacts/, by size and mtime. Subdirectories included."""
+    if not root.is_dir():
+        return {}
+    state = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            stat = path.stat()
+            state[str(path.relative_to(root))] = (stat.st_size, stat.st_mtime_ns)
+    return state
+
+
 @pytest.fixture(autouse=True)
 def _guard_real_artifacts():
-    """Fail any test that leaves a new file in the repository's artifacts/.
+    """Fail any test that touches the repository's artifacts/ at all.
 
     A backstop for the fixtures above: if a test ever writes through to the real
     directory, it is caught here rather than in `git status` days later.
+
+    It used to compare only the top-level FILENAMES, which missed two whole
+    categories. A test that OVERWRITES an existing file changed no name, and a
+    test that wrote into artifacts/figures/ changed nothing at the top level at
+    all -- so `test_script06_needs_no_torch_and_no_dataset`, which runs the real
+    script 06 in a subprocess, quietly regenerated all ten tracked figures on
+    every test run and the churn only showed up in `git status`. Size and mtime
+    of every file, recursively, catches both.
     """
     real = REPO_ROOT / "artifacts"
-    before = {p.name for p in real.iterdir()} if real.is_dir() else set()
+    before = _artifact_state(real)
     yield
-    after = {p.name for p in real.iterdir()} if real.is_dir() else set()
-    created, removed = after - before, before - after
-    assert not created, "test created file(s) in the real artifacts/: %s" % sorted(created)
-    assert not removed, "test removed file(s) from the real artifacts/: %s" % sorted(removed)
+    after = _artifact_state(real)
+
+    created = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    changed = sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    assert not created, "test created file(s) in the real artifacts/: %s" % created
+    assert not removed, "test removed file(s) from the real artifacts/: %s" % removed
+    assert not changed, "test MODIFIED file(s) in the real artifacts/: %s" % changed

@@ -94,11 +94,98 @@ PAIRED_HEADER = [
     "optimistic -- they overstate significance by an amount nobody here has",
     "quantified. mean_diff and its interval are the substance; p is reported",
     "because reviewers expect it, not because it is trustworthy.",
+    "",
+    "SUPERSEDED FOR INFERENCE by artifacts/paired_comparisons_corrected.csv,",
+    "which quantifies exactly that amount: the Nadeau-Bengio correction widens",
+    "every interval here by a factor of 2.1794. Read this file for the per-fold",
+    "effect sizes and that one for whether a difference is established.",
 ]
 
 
 def _fold_key(record: dict[str, Any]) -> str:
     return "r%sf%s" % (record.get("repeat"), record.get("fold"))
+
+
+# --------------------------------------------------------------------------
+# Nadeau-Bengio corrected intervals for resampled k-fold
+#
+# Shared by scripts/08 (the published comparison) and scripts/11 (the recipe
+# and epoch-budget checks). ONE implementation: two would eventually disagree,
+# and the disagreement would be between two numbers in the same manuscript.
+# --------------------------------------------------------------------------
+
+
+def folds_per_repeat(records: list[dict]) -> int:
+    """k, read off the records rather than assumed.
+
+    n_test/n_train depends on it, so hardcoding 5 here would silently produce a
+    wrong interval if the design ever changed.
+    """
+    folds = {r.get("fold") for r in records if r.get("fold") is not None}
+    if not folds:
+        raise SystemExit("No fold numbers in these records; cannot infer k.")
+    k = max(folds) + 1
+    if sorted(folds) != list(range(k)):
+        raise SystemExit(
+            "Fold numbers are not a contiguous 0..k-1 range: %s\n"
+            "  The Nadeau-Bengio correction needs n_test/n_train, which is "
+            "1/(k-1) only for a complete k-fold partition." % sorted(folds)
+        )
+    return k
+
+
+def corrected_interval(
+    differences: np.ndarray, rho: float, confidence: float = 0.95
+) -> dict:
+    """Naive and Nadeau-Bengio corrected intervals for one paired comparison.
+
+    `rho` is n_test/n_train. The corrected standard error replaces the factor
+    1/n by (1/n + rho); rho = 0 recovers the naive interval exactly, which is
+    how the two are kept in one code path rather than two that could drift.
+    """
+    from scipy import stats
+
+    differences = np.asarray(differences, dtype=float)
+    n = differences.size
+    mean = float(differences.mean())
+    sd = float(differences.std(ddof=1)) if n > 1 else 0.0
+    df = n - 1
+
+    def interval(factor: float) -> tuple[float, float, float, float]:
+        error = sd * np.sqrt(factor)
+        if error <= 0:
+            return mean, mean, error, float("nan")
+        half = stats.t.ppf(0.5 + confidence / 2.0, df) * error
+        t_statistic = mean / error
+        p = float(2.0 * stats.t.sf(abs(t_statistic), df))
+        return mean - half, mean + half, float(error), p
+
+    naive_low, naive_high, naive_se, naive_p = interval(1.0 / n)
+    corr_low, corr_high, corr_se, corr_p = interval(1.0 / n + rho)
+
+    wilcoxon_p = float("nan")
+    if n > 1 and np.any(differences != 0):
+        wilcoxon_p = float(stats.wilcoxon(differences).pvalue)
+
+    return {
+        "n_folds": n,
+        "mean_diff": mean,
+        "sd_diff": sd,
+        "se_naive": naive_se,
+        "se_corrected": corr_se,
+        "ci95_naive_low": naive_low,
+        "ci95_naive_high": naive_high,
+        "ci95_corrected_low": corr_low,
+        "ci95_corrected_high": corr_high,
+        "p_naive": naive_p,
+        "p_corrected": corr_p,
+        "wilcoxon_p": wilcoxon_p,
+        "naive_excludes_zero": bool(naive_low > 0 or naive_high < 0),
+        "corrected_excludes_zero": bool(corr_low > 0 or corr_high < 0),
+        "a_wins": int((differences > 0).sum()),
+        "b_wins": int((differences < 0).sum()),
+        "ties": int((differences == 0).sum()),
+    }
 
 
 def paired_comparisons(
@@ -461,6 +548,22 @@ def provenance_caption(block: dict[str, Any]) -> str:
     )
 
 
+# The one provenance line that moves on every run. Everything else in the
+# header is data-derived, so it belongs in the change check.
+VOLATILE_HEADER_PREFIX = "# generated:"
+
+
+def csv_stable_header(path: Path) -> str:
+    """The `#` header of a written file, minus the line that always changes."""
+    if not Path(path).exists():
+        return ""
+    return "".join(
+        line
+        for line in Path(path).read_text(encoding="utf-8").splitlines(keepends=True)
+        if line.startswith("#") and not line.startswith(VOLATILE_HEADER_PREFIX)
+    )
+
+
 def csv_body(path: Path) -> str:
     """A stamped CSV with its `#` header removed: the data, without provenance."""
     if not Path(path).exists():
@@ -489,13 +592,24 @@ def write_csv_with_provenance(
     header = "".join(("# %s\n" % line).replace("# \n", "#\n") for line in lines)
     body = frame.to_csv(index=False, lineterminator="\n")
 
-    # Only rewrite when the DATA changed. The provenance timestamp moves on every
-    # run, so stamping unconditionally made every re-export rewrite every table
-    # and figure -- pure review noise, and it costs more than it earns. A stale
-    # artefact is still detectable without it: the record count, the corpus
-    # fingerprint and the registry sha1 are all in the stamp, and those are the
-    # parts that were ever doing the work.
-    if csv_body(target) == body:
+    # Only rewrite when something that MATTERS changed. The provenance timestamp
+    # moves on every run, so stamping unconditionally made every re-export
+    # rewrite every table and figure -- pure review noise, and it costs more
+    # than it earns. A stale artefact is still detectable without it: the record
+    # count, the corpus fingerprint and the registry sha1 are all in the stamp,
+    # and those are the parts that were ever doing the work.
+    #
+    # The header is compared too, minus that one volatile line. Comparing only
+    # the data meant an edit to the EXPLANATORY header -- the paragraphs telling
+    # a reader how to read the table -- could never reach the file: the numbers
+    # were unchanged, so the write was skipped and the correction silently did
+    # nothing. A sentence in a cited artefact that has become false is exactly
+    # the case where a rewrite is worth its diff.
+    stable = "".join(
+        line for line in header.splitlines(keepends=True)
+        if not line.startswith(VOLATILE_HEADER_PREFIX)
+    )
+    if csv_body(target) == body and csv_stable_header(target) == stable:
         return target
 
     target.write_text(header + body, encoding="utf-8", newline="\n")

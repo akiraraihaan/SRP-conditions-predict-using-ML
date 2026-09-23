@@ -349,14 +349,31 @@ def test_pruning_can_spare_the_tables(script06, artifacts):
 # ---------------------------------------------------------------- decoupling
 
 
-def test_script06_needs_no_torch_and_no_dataset():
-    """It must run on a laptop with no GPU and no copy of the images."""
+def test_script06_needs_no_torch_and_no_dataset(tmp_path):
+    """It must run on a laptop with no GPU and no copy of the images.
+
+    It runs the REAL script, so it must not run against the REAL artifacts/.
+    This test regenerated all ten tracked figures on every invocation of the
+    suite, and because it only ever overwrote files that already existed and
+    wrote them one level down, the old guard -- which compared top-level
+    filenames -- never saw it. The directory is copied to tmp_path and
+    load_data_config is redirected there.
+    """
+    import shutil
     import subprocess
+
+    sandbox = tmp_path / "artifacts"
+    shutil.copytree(REPO_ROOT / "artifacts", sandbox)
 
     probe = (
         "import sys, os, runpy\n"
         "sys.path.insert(0, 'src')\n"
         "os.environ['SRPCARD_DATA_ROOT'] = '/nonexistent-on-purpose'\n"
+        "import srpcard.config as C\n"
+        "_real = C.load_data_config\n"
+        "C.load_data_config = lambda *a, **k: dict(_real(), artifacts_dir=r'''"
+        + str(sandbox)
+        + "''')\n"
         "sys.argv = ['06']\n"
         "try:\n"
         "    runpy.run_path('scripts/06_export_figures.py', run_name='__main__')\n"
@@ -379,3 +396,82 @@ def test_script06_reads_only_artifacts_and_configs():
     assert "resolve_data_root" not in source, "06 must not resolve DATA_ROOT"
     for module in ("torch", "ultralytics", "torchvision"):
         assert "import %s" % module not in source
+
+
+# ------------------------------------------------------- E3: the global guard
+
+
+def test_the_provenance_context_manager_restores_what_it_found():
+    """PROVENANCE is a module global, so a caller that sets it and raises leaks
+    it into the NEXT figure -- which is the per-artefact stamp failing in the
+    exact way it exists to prevent."""
+    from srpcard import figures
+
+    figures.set_provenance({"n_records": 1})
+    try:
+        with pytest.raises(RuntimeError):
+            with figures.provenance({"n_records": 99}):
+                assert figures.PROVENANCE["n_records"] == 99
+                raise RuntimeError("boom")
+        assert figures.PROVENANCE["n_records"] == 1, "the stamp leaked"
+    finally:
+        figures.set_provenance(None)
+
+
+def test_the_context_manager_restores_the_render_flag_too():
+    from srpcard import figures
+
+    figures.set_render_provenance(True)
+    try:
+        with figures.provenance(None, render=False):
+            assert figures.RENDER_PROVENANCE is False
+        assert figures.RENDER_PROVENANCE is True
+    finally:
+        figures.set_render_provenance(True)
+
+
+def test_nesting_unwinds_in_order():
+    from srpcard import figures
+
+    figures.set_provenance(None)
+    try:
+        with figures.provenance({"n_records": 1}):
+            with figures.provenance({"n_records": 2}):
+                assert figures.PROVENANCE["n_records"] == 2
+            assert figures.PROVENANCE["n_records"] == 1
+        assert figures.PROVENANCE is None
+    finally:
+        figures.set_provenance(None)
+
+
+# ------------------------------------------------------- E1: the stale caption
+
+
+def test_the_learning_curve_title_names_the_arm_from_the_records():
+    """It said yolo26n for weeks after script 05 was retargeted at
+    mobilenetv3_small. artifacts/learning_curve.csv carries no arm column, so
+    nothing could have caught it from the table alone."""
+    from srpcard import figures
+
+    records = [{"arm": "mobilenetv3_small"}] * 75
+    assert figures.sole_arm(records) == "mobilenetv3_small"
+
+
+def test_a_mixed_arm_set_falls_back_rather_than_picking_one():
+    from srpcard import figures
+
+    mixed = [{"arm": "mobilenetv3_small"}, {"arm": "yolo26n"}]
+    assert figures.sole_arm(mixed, fallback="the locked") == "the locked"
+    assert figures.sole_arm([], fallback="the locked") == "the locked"
+
+
+def test_no_arm_name_is_hardcoded_in_a_figure_title():
+    """The defect class, not just the one instance."""
+    source = (REPO_ROOT / "src" / "srpcard" / "figures.py").read_text(encoding="utf-8")
+    for line in source.splitlines():
+        if "set_title(" in line or ("ax.set_title" in line):
+            for arm in ("yolo26n", "yolo26s", "yolo26m", "resnet18", "mobilenetv3_small"):
+                assert arm not in line, (
+                    "figure title hardcodes an arm name, which survives a "
+                    "retarget silently: %s" % line.strip()
+                )

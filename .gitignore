@@ -93,6 +93,35 @@ artifacts/*
 !artifacts/paired_comparisons.csv
 # 06, which arms are on the Pareto frontier and who dominates the rest
 !artifacts/pareto_status.csv
+# 08, paired intervals with the Nadeau-Bengio correction. SUPERSEDES
+# paired_comparisons.csv for inference; both are kept so the difference the
+# correction makes is auditable rather than asserted.
+!artifacts/paired_comparisons_corrected.csv
+# 08, macro-F1 recomputed under merged taxonomies, from the stored confusion
+# matrices. No retraining.
+!artifacts/taxonomy_merge.csv
+# 08, the CONTROL: all 45 single-pair merges ranked, per arm
+!artifacts/taxonomy_merge_pairs.csv
+# 08, per-fold merged values, so any scenario pair can be given a corrected
+# interval without recomputing the merges
+!artifacts/taxonomy_merge_folds.csv
+
+# 11, the 2x2 that breaks the optimizer/architecture confound, plus the
+# native-recipe row. Preprocessing is NOT constant across rows; the column says so.
+!artifacts/yolo_recipe_check.csv
+# 11, C1: yolo26n with the epoch budget raised 25 -> 50
+!artifacts/epoch_budget_check.csv
+# 11, C1: where best-weight selection landed, appendix C form
+!artifacts/epoch_budget_selection.csv
+
+# 10, quantisation: size and accuracy for dynamic and static PTQ. NO LATENCY.
+!artifacts/quantisation.csv
+
+# 09, near-duplicate clusters and whether any straddles a fold boundary.
+# Corpus-level, so no arm and no protocol: identified by corpus_fingerprint.
+!artifacts/near_duplicates.csv
+!artifacts/near_duplicate_summary.json
+
 # 04
 !artifacts/ablation_paired.csv
 # 04

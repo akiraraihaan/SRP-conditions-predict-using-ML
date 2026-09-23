@@ -37,6 +37,8 @@ def make_record(**overrides):
         metrics={"f1_macro": 0.8, "accuracy": 0.8, "confusion_matrix": [], "class_order": []},
         efficiency={"params": 1, "gflops": 1.0, "size_mb": 1.0},
         wall_time_s=1.0,
+        # 03_run_cv hashes `extra` as None -- see docs/RUN_ID.md.
+        run_id_extra=None,
         extra={"protocol": "uniform"},
     )
     record.update(overrides)
