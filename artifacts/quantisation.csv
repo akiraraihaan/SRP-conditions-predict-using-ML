@@ -1,0 +1,45 @@
+# Post-training quantisation: SIZE AND ACCURACY. NO LATENCY.
+#
+# Nothing here was timed. The Raspberry Pi is not involved, and no row in
+# this table supports a claim about speed. Latency lives in
+# artifacts/raspberry-pi-result/edge_benchmark.json and nowhere else.
+#
+# Two methods, because the edge benchmark measured only the first:
+#   dynamic  converts Linear and the RNN family. Conv2d is NOT supported and
+#            is silently left in fp32, so a convolution-dominated model is
+#            barely compressed and a ratio near 1.0 is the CORRECT result.
+#   static   fuses and calibrates, and does quantise convolutions. This is
+#            the method the microcontroller argument actually rests on.
+#
+# CALIBRATION USED THE TRAINING PARTITION ONLY, asserted in code. Calibrating
+# on test would tune the quantisation to the images it is then scored on.
+#
+# The fold is configs/arms.yaml:reporting.benchmark_fold -- fixed and
+# pre-declared, not the best-scoring fold.
+#
+# THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.
+#
+# macro_f1_fp32 is MEASURED here from the checkpoint this script was given,
+# and every quantisation delta is taken against it. macro_f1_fp32_recorded_
+# in_registry is CONTEXT ONLY -- do not compute a delta against it.
+#
+# The two can differ without either being wrong. A fold reproduces exactly
+# when re-run WITHIN a session and not BETWEEN sessions, on the same GPU
+# model and the same torch version -- up to 1.9e-2 macro-F1 for
+# mobilenetv3_small, while yolo26n and yolo26m reproduce exactly. The cause
+# is UNIDENTIFIED. A gap in macro_f1_fp32_measured_minus_recorded is a
+# between-session difference, not a quantisation effect. See
+# artifacts/environment_replication.csv.
+#
+# built from 75 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
+# scripts: 03_run_cv
+# corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T09:20:34+00:00
+arm,architecture,protocol,repeat,fold,n_test_images,n_calibration_images,latency_measured,latency_note,size_mb_fp32,macro_f1_fp32,macro_f1_fp32_recorded_in_registry,macro_f1_fp32_measured_minus_recorded,baseline_is,dynamic_available,dynamic_failure_reason,dynamic_backend,size_mb_dynamic,size_ratio_dynamic,coverage_pct_dynamic,quantised_layers_dynamic,macro_f1_dynamic,macro_f1_delta_dynamic,under_flash_budget_dynamic,static_available,static_failure_reason,size_mb_static,macro_f1_static
+mobilenetv3_small,mobilenet_v3_small,uniform,0,0,134,480,False,NOT MEASURED HERE -- size and accuracy only,5.961,0.671546,0.6715457801157598,0.0,"measured from this checkpoint, in this environment",True,,,4.245,0.712,39.34,2 x Linear,0.673643,0.002097,False,False,ValueError: too many values to unpack (expected 2),,
+resnet18,resnet18,uniform,0,0,134,480,False,NOT MEASURED HERE -- size and accuracy only,42.731,0.668312,0.6683122367050938,0.0,"measured from this checkpoint, in this environment",True,,,42.717,1.0,0.05,1 x Linear,0.673896,0.005584,False,False,ValueError: too many values to unpack (expected 2),,
+yolo26m,yolo26m-cls,uniform,0,0,134,480,False,NOT MEASURED HERE -- size and accuracy only,39.732,0.524851,0.5248505174380965,0.0,"measured from this checkpoint, in this environment",True,,,39.696,0.999,0.12,1 x Linear,0.534675,0.009824,False,False,ValueError: too many values to unpack (expected 2),,
+yolo26n,yolo26n-cls,uniform,0,0,134,480,False,NOT MEASURED HERE -- size and accuracy only,6.008,0.572968,0.5729683054073298,0.0,"measured from this checkpoint, in this environment",True,,,5.972,0.994,0.83,1 x Linear,0.562687,-0.010281,False,False,ValueError: too many values to unpack (expected 2),,
+yolo26s,yolo26s-cls,uniform,0,0,134,480,False,NOT MEASURED HERE -- size and accuracy only,20.96,0.53019,0.5301901009267451,0.0,"measured from this checkpoint, in this environment",True,,,20.924,0.998,0.23,1 x Linear,0.534583,0.004393,False,False,ValueError: too many values to unpack (expected 2),,
