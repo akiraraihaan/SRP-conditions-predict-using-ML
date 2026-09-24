@@ -1,0 +1,33 @@
+# Was YOLO26 handicapped? The 2x2 that breaks the optimizer/architecture
+# confound, plus the native-recipe run.
+#
+# configs/arms.yaml sets optimizer: MuSGD on all three YOLO arms and SGD on
+# both baselines, so in the published comparison the optimizer is confounded
+# with the architecture family. Running YOLO with SGD does not break that --
+# it only says what happens when YOLO loses MuSGD. The cross goes both ways:
+#
+#                         MuSGD                SGD
+#     yolo26n             published            contrast
+#     mobilenetv3_small   contrast             published
+#
+# PREPROCESSING IS NOT CONSTANT ACROSS EVERY ROW. The four uniform cells are
+# letterbox_224; the native row is ultralytics_default, because evaluating a
+# natively trained model through our letterbox would show it a transform it
+# never trained on and manufacture the result that run exists to test. The
+# native row is 'their recipe end to end', NOT one variable changed. Do not
+# read this table as an apples-to-apples preprocessing comparison.
+#
+# Intervals carry the Nadeau-Bengio correction; these are overlapping folds.
+#
+# built from 264 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
+# scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
+# corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T03:38:46+00:00
+cell,arm,optimizer,role,script,preprocessing,protocol,repeat,n_folds,f1_macro_mean,f1_macro_sd,fold0,fold1,fold2,fold3,fold4,vs_yolo26n_musgd_mean,vs_yolo26n_musgd_ci_low,vs_yolo26n_musgd_ci_high,vs_yolo26n_musgd_excludes_zero,vs_yolo26n_musgd_n_folds
+yolo26n / MuSGD,yolo26n,musgd,published arm,03_run_cv,letterbox_224,uniform,0,5,0.523277,0.074796,0.572968,0.391518,0.545736,0.56464,0.541523,,,,,
+yolo26n / SGD,yolo26n,sgd,contrast,03b_contrast,letterbox_224,uniform,0,5,0.523277,0.074796,0.572968,0.391518,0.545736,0.56464,0.541523,0.0,0.0,0.0,False,5.0
+mobilenetv3_small / SGD,mobilenetv3_small,sgd,published arm,03_run_cv,letterbox_224,uniform,0,5,0.58124,0.102638,0.671546,0.60977,0.558935,0.651321,0.414627,0.057963,-0.178258,0.294183,False,5.0
+mobilenetv3_small / MuSGD,mobilenetv3_small,musgd,contrast,03b_contrast,letterbox_224,uniform,0,5,0.570312,0.058895,0.65481,0.530486,0.599368,0.505287,0.56161,0.047035,-0.090309,0.184379,False,5.0
+yolo26n / native recipe,yolo26n,native,native recipe,03c_native_recipe,ultralytics_default,native,0,5,0.578656,0.053521,0.635422,0.493089,0.607743,0.572695,0.584331,0.055379,-0.007955,0.118713,False,5.0

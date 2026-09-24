@@ -20,8 +20,8 @@
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
 # scripts: 03_run_cv
 # corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
-# registry sha1: f050ad2781ea10f3
-# generated: 2026-09-23T04:27:50+00:00
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T08:57:41+00:00
 arm_a,arm_b,n_folds,mean_diff,ci95_low,ci95_high,wilcoxon_p,a_wins,b_wins,ties,ci_excludes_zero,metric
 resnet18,yolo26s,15,0.098102,0.064863,0.131341,6.1e-05,15,0,0,True,f1_macro
 mobilenetv3_small,yolo26s,15,0.086118,0.047477,0.124759,0.000854,13,2,0,True,f1_macro

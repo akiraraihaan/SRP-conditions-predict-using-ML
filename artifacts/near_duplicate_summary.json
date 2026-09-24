@@ -1,0 +1,2215 @@
+{
+  "script": "09_duplicate_audit",
+  "threshold": 5,
+  "hash_size": 8,
+  "hash_bits": 64,
+  "hashes": [
+    "phash",
+    "dhash",
+    "average_hash"
+  ],
+  "primary_hash": "phash",
+  "n_images": 668,
+  "n_pairs_compared": 222778,
+  "distance_histograms": {
+    "phash": {
+      "0": 1,
+      "2": 9,
+      "4": 106,
+      "6": 479,
+      "8": 1709,
+      "10": 4724,
+      "12": 10084,
+      "14": 17929,
+      "16": 26055,
+      "18": 31361,
+      "20": 31742,
+      "22": 27832,
+      "24": 21765,
+      "26": 15958,
+      "28": 11849,
+      "30": 8655,
+      "32": 6146,
+      "34": 3763,
+      "36": 1723,
+      "38": 659,
+      "40": 186,
+      "42": 39,
+      "44": 4
+    },
+    "dhash": {
+      "0": 1,
+      "3": 2,
+      "4": 15,
+      "5": 44,
+      "6": 90,
+      "7": 207,
+      "8": 399,
+      "9": 676,
+      "10": 1205,
+      "11": 1934,
+      "12": 2819,
+      "13": 4110,
+      "14": 6024,
+      "15": 7754,
+      "16": 9874,
+      "17": 11880,
+      "18": 14258,
+      "19": 15687,
+      "20": 17328,
+      "21": 17868,
+      "22": 18182,
+      "23": 17215,
+      "24": 15991,
+      "25": 13775,
+      "26": 11870,
+      "27": 9383,
+      "28": 7382,
+      "29": 5466,
+      "30": 3924,
+      "31": 2709,
+      "32": 1827,
+      "33": 1240,
+      "34": 755,
+      "35": 433,
+      "36": 247,
+      "37": 125,
+      "38": 50,
+      "39": 22,
+      "40": 3,
+      "41": 2,
+      "42": 2
+    },
+    "average_hash": {
+      "0": 1,
+      "1": 2,
+      "2": 11,
+      "3": 34,
+      "4": 122,
+      "5": 269,
+      "6": 639,
+      "7": 1203,
+      "8": 1967,
+      "9": 3071,
+      "10": 4475,
+      "11": 6017,
+      "12": 7861,
+      "13": 9911,
+      "14": 11446,
+      "15": 12868,
+      "16": 14369,
+      "17": 15397,
+      "18": 15961,
+      "19": 16064,
+      "20": 15457,
+      "21": 14725,
+      "22": 13601,
+      "23": 12250,
+      "24": 10566,
+      "25": 8846,
+      "26": 7221,
+      "27": 5548,
+      "28": 4219,
+      "29": 3055,
+      "30": 2013,
+      "31": 1440,
+      "32": 910,
+      "33": 558,
+      "34": 331,
+      "35": 139,
+      "36": 104,
+      "37": 62,
+      "38": 21,
+      "39": 13,
+      "40": 7,
+      "41": 2,
+      "42": 1,
+      "43": 1
+    }
+  },
+  "n_pairs_flagged": {
+    "phash": 116,
+    "dhash": 62,
+    "average_hash": 439
+  },
+  "n_pairs_flagged_by_all_three": 2,
+  "n_clusters": 33,
+  "n_clusters_straddling_a_fold": 33,
+  "n_clusters_straddling_dev": 16,
+  "clusters": [
+    {
+      "cluster": 1,
+      "size": 2,
+      "idx": [
+        2,
+        521
+      ],
+      "labels": [
+        "collide_pump_and_vibration",
+        "severe_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 2,
+      "size": 2,
+      "idx": [
+        39,
+        110
+      ],
+      "labels": [
+        "full_load_production",
+        "gas_influence"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "test"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "test": 1
+      }
+    },
+    {
+      "cluster": 3,
+      "size": 2,
+      "idx": [
+        43,
+        133
+      ],
+      "labels": [
+        "full_load_production",
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 4,
+      "size": 3,
+      "idx": [
+        48,
+        395,
+        457
+      ],
+      "labels": [
+        "full_load_production",
+        "pump_leakage"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "test"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 2,
+        "test": 1
+      }
+    },
+    {
+      "cluster": 5,
+      "size": 2,
+      "idx": [
+        56,
+        418
+      ],
+      "labels": [
+        "full_load_production",
+        "pump_leakage"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 6,
+      "size": 2,
+      "idx": [
+        68,
+        167
+      ],
+      "labels": [
+        "full_load_production",
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 7,
+      "size": 2,
+      "idx": [
+        81,
+        657
+      ],
+      "labels": [
+        "full_load_production",
+        "vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 8,
+      "size": 2,
+      "idx": [
+        84,
+        507
+      ],
+      "labels": [
+        "full_load_production",
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 9,
+      "size": 3,
+      "idx": [
+        87,
+        229,
+        269
+      ],
+      "labels": [
+        "gas_influence",
+        "insufficient_liquid_supply_and_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 8,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 2
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 3
+      }
+    },
+    {
+      "cluster": 10,
+      "size": 3,
+      "idx": [
+        89,
+        448,
+        488
+      ],
+      "labels": [
+        "gas_influence",
+        "pump_leakage",
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 2,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 2,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 11,
+      "size": 4,
+      "idx": [
+        93,
+        120,
+        148,
+        187
+      ],
+      "labels": [
+        "gas_influence",
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 9,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 3,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 4
+      }
+    },
+    {
+      "cluster": 12,
+      "size": 2,
+      "idx": [
+        95,
+        663
+      ],
+      "labels": [
+        "gas_influence",
+        "vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 3,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 13,
+      "size": 5,
+      "idx": [
+        99,
+        113,
+        115,
+        139,
+        182
+      ],
+      "labels": [
+        "gas_influence",
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 9,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 3
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 4,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 3
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 4,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 4,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 3
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 4,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 14,
+      "size": 9,
+      "idx": [
+        131,
+        459,
+        468,
+        469,
+        471,
+        474,
+        478,
+        495,
+        498
+      ],
+      "labels": [
+        "gas_influence_and_vibration",
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 12,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 5,
+          "n_test": 3
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 5,
+          "n_test": 3
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 7,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 7,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 6,
+          "n_test": 3
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 4,
+          "n_test": 4
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 6,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 5,
+          "n_test": 3
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 6,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 5,
+          "n_test": 2
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 8,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 15,
+      "size": 9,
+      "idx": [
+        140,
+        144,
+        146,
+        161,
+        170,
+        173,
+        176,
+        177,
+        188
+      ],
+      "labels": [
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 14,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 6,
+          "n_test": 3
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 6,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 6,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 7,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 6,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 6,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 7,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 7,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 7,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 5,
+          "n_test": 3
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 6,
+          "n_test": 3
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val",
+        "test"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 5,
+        "val": 1,
+        "test": 3
+      }
+    },
+    {
+      "cluster": 16,
+      "size": 2,
+      "idx": [
+        150,
+        179
+      ],
+      "labels": [
+        "gas_influence_and_vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 17,
+      "size": 2,
+      "idx": [
+        223,
+        279
+      ],
+      "labels": [
+        "insufficient_liquid_supply_and_vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "val",
+        "test"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "val": 1,
+        "test": 1
+      }
+    },
+    {
+      "cluster": 18,
+      "size": 2,
+      "idx": [
+        249,
+        285
+      ],
+      "labels": [
+        "insufficient_liquid_supply_and_vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 19,
+      "size": 2,
+      "idx": [
+        289,
+        499
+      ],
+      "labels": [
+        "insufficient_liquid_supply_and_vibration",
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 20,
+      "size": 2,
+      "idx": [
+        297,
+        655
+      ],
+      "labels": [
+        "natural_flowing",
+        "vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 3,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 21,
+      "size": 37,
+      "idx": [
+        304,
+        306,
+        308,
+        309,
+        317,
+        318,
+        324,
+        328,
+        360,
+        363,
+        366,
+        401,
+        402,
+        408,
+        419,
+        424,
+        427,
+        430,
+        432,
+        436,
+        437,
+        450,
+        451,
+        524,
+        530,
+        531,
+        536,
+        545,
+        553,
+        576,
+        578,
+        603,
+        605,
+        610,
+        628,
+        638,
+        639
+      ],
+      "labels": [
+        "natural_flowing",
+        "pump_leakage",
+        "severe_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 15,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 26,
+          "n_test": 10
+        },
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 31,
+          "n_test": 5
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 26,
+          "n_test": 9
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 31,
+          "n_test": 4
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 26,
+          "n_test": 9
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 31,
+          "n_test": 6
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 32,
+          "n_test": 3
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 25,
+          "n_test": 10
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 23,
+          "n_test": 10
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 26,
+          "n_test": 8
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 27,
+          "n_test": 6
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 27,
+          "n_test": 7
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 27,
+          "n_test": 7
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 24,
+          "n_test": 11
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 29,
+          "n_test": 6
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val",
+        "test"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 29,
+        "val": 2,
+        "test": 6
+      }
+    },
+    {
+      "cluster": 22,
+      "size": 2,
+      "idx": [
+        330,
+        643
+      ],
+      "labels": [
+        "natural_flowing",
+        "severe_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 23,
+      "size": 4,
+      "idx": [
+        342,
+        346,
+        347,
+        369
+      ],
+      "labels": [
+        "natural_flowing"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 9,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 2,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 3,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 2,
+          "n_test": 2
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 3,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 24,
+      "size": 2,
+      "idx": [
+        387,
+        415
+      ],
+      "labels": [
+        "natural_flowing",
+        "pump_leakage"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 3,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 25,
+      "size": 2,
+      "idx": [
+        409,
+        630
+      ],
+      "labels": [
+        "pump_leakage",
+        "severe_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 2,
+      "folds_straddled": [
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 26,
+      "size": 2,
+      "idx": [
+        416,
+        601
+      ],
+      "labels": [
+        "pump_leakage",
+        "severe_vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 2,
+      "folds_straddled": [
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 27,
+      "size": 3,
+      "idx": [
+        449,
+        479,
+        492
+      ],
+      "labels": [
+        "pump_leakage",
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 8,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 2,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 3
+      }
+    },
+    {
+      "cluster": 28,
+      "size": 2,
+      "idx": [
+        464,
+        465
+      ],
+      "labels": [
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 1,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    },
+    {
+      "cluster": 29,
+      "size": 3,
+      "idx": [
+        467,
+        476,
+        509
+      ],
+      "labels": [
+        "severe_insufficient_liquid_supply"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 7,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 2
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 3
+      }
+    },
+    {
+      "cluster": 30,
+      "size": 2,
+      "idx": [
+        555,
+        624
+      ],
+      "labels": [
+        "severe_vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 5,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 31,
+      "size": 3,
+      "idx": [
+        622,
+        645,
+        647
+      ],
+      "labels": [
+        "severe_vibration",
+        "vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 6,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 1,
+          "n_train": 2,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 1,
+          "fold": 2,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 2
+        },
+        {
+          "repeat": 2,
+          "fold": 2,
+          "n_train": 2,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 2,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 32,
+      "size": 2,
+      "idx": [
+        632,
+        660
+      ],
+      "labels": [
+        "severe_vibration",
+        "vibration"
+      ],
+      "label_consistent": false,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 1,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 1,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train",
+        "val"
+      ],
+      "dev_straddles": true,
+      "dev_counts": {
+        "train": 1,
+        "val": 1
+      }
+    },
+    {
+      "cluster": 33,
+      "size": 2,
+      "idx": [
+        656,
+        684
+      ],
+      "labels": [
+        "vibration"
+      ],
+      "label_consistent": true,
+      "n_folds_straddled": 4,
+      "folds_straddled": [
+        {
+          "repeat": 0,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 0,
+          "fold": 4,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 0,
+          "n_train": 1,
+          "n_test": 1
+        },
+        {
+          "repeat": 2,
+          "fold": 3,
+          "n_train": 1,
+          "n_test": 1
+        }
+      ],
+      "dev_parts": [
+        "train"
+      ],
+      "dev_straddles": false,
+      "dev_counts": {
+        "train": 2
+      }
+    }
+  ],
+  "corpus_fingerprint": "f04c12c0922c6597eb139af66ef91e9f8df56b6e",
+  "n_folds": 15,
+  "arm": null,
+  "protocol": null,
+  "scope": "corpus-level: no arm, no protocol, identified by corpus_fingerprint",
+  "library_versions": {
+    "python": "3.13.15",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "numpy": "2.4.6",
+    "pandas": "3.0.3",
+    "sklearn": "1.8.0",
+    "scipy": "1.17.1",
+    "torch": "2.12.0+cu130",
+    "torchvision": "0.27.0+cu130",
+    "ultralytics": "8.4.53",
+    "PIL": "12.2.0",
+    "cv2": "4.13.0",
+    "matplotlib": "3.10.9",
+    "yaml": "6.0.3",
+    "torch_cuda": "13.0",
+    "cuda_available": "True",
+    "gpu": "Tesla T4"
+  },
+  "changed_nothing": true
+}

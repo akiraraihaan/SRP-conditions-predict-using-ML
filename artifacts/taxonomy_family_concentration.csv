@@ -1,0 +1,51 @@
+# Where the six within-family pairs sit among all 45 single-pair merges.
+#
+# THIS IS THE CONTROL REPORTING ITS OWN RESULT. Merging any two of ten
+# classes raises macro-F1 for free, so 'the proposed merges gain the most'
+# means nothing until it is set against how surprising that position is.
+#
+# The four classes are vibration, severe_vibration, pump_leakage and
+# natural_flowing. Six pairs can be drawn from them, out of 45 possible.
+#
+# p_top_k is the chance a PRE-SPECIFIED set of 6 occupies exactly the top 6:
+# 1 / C(45,6) = 1 / 8,145,060. It is defined only when the ranks really are
+# 1-6. p_rank_sum is the graded version -- the chance of a rank sum this
+# small or smaller -- and is the one to quote when the block is near the top
+# but not flush with it.
+#
+# Both are EXACT, counted by dynamic programming over all C(45,6) subsets.
+# No sampling and no normal approximation: the claim lives far out in the
+# tail, which is where an approximation is least trustworthy.
+#
+# CAVEAT -- READ THIS BEFORE QUOTING THE NUMBER.
+#
+# Only TWO of the six pairs were pre-specified. M1 (vibration +
+# severe_vibration) and M2 (pump_leakage + natural_flowing) were proposed in
+# advance. The other four within-family pairs were NOT: they were discovered
+# in the same ranking that scores them here.
+#
+# p_top_k is exact only for a set fixed BEFORE the data were seen. Applied to
+# a set selected from this ranking it is circular, because the selection and
+# the test use the same numbers. It is reported because it is the right
+# statistic for the pre-specified half and because it bounds how extreme the
+# position is -- not because it licenses a p-value for the family.
+#
+# THE DEFENSIBLE CLAIM FOR THE FOUR-CLASS FAMILY IS DESCRIPTIVE, PLUS
+# REPLICATION: the same six pairs occupy the top of the ranking in five
+# architectures spanning three families, on the same folds. That is a
+# replication argument, not a hypothesis test, and the five arms are not
+# independent -- same folds, same images, same confusion structure -- so the
+# per-arm probabilities must not be multiplied together.
+#
+# built from 75 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
+# scripts: 03_run_cv
+# corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T08:57:27+00:00
+arm,protocol,family,n_pairs_total,n_family_pairs,ranks,rank_sum,rank_sum_min_possible,occupies_top_k,p_rank_sum,p_top_k,n_subsets
+mobilenetv3_small,uniform,natural_flowing+pump_leakage+severe_vibration+vibration,45,6,"1,2,3,4,5,6",21,21,True,1.2277380399898834e-07,1.2277380399898834e-07,8145060
+resnet18,uniform,natural_flowing+pump_leakage+severe_vibration+vibration,45,6,"1,2,3,4,5,6",21,21,True,1.2277380399898834e-07,1.2277380399898834e-07,8145060
+yolo26m,uniform,natural_flowing+pump_leakage+severe_vibration+vibration,45,6,"1,2,3,4,5,6",21,21,True,1.2277380399898834e-07,1.2277380399898834e-07,8145060
+yolo26n,uniform,natural_flowing+pump_leakage+severe_vibration+vibration,45,6,"1,2,4,5,6,7",25,21,False,1.47328564798786e-06,,8145060
+yolo26s,uniform,natural_flowing+pump_leakage+severe_vibration+vibration,45,6,"1,2,4,5,6,7",25,21,False,1.47328564798786e-06,,8145060

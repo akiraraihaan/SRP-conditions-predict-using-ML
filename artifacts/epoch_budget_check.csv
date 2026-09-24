@@ -1,0 +1,23 @@
+# C1: yolo26n with the epoch budget raised from 25 to 50.
+#
+# The uniform grid locked nano at 25 epochs while every other arm got 50, and
+# nano is the only arm whose selected epochs cluster near its budget. This
+# separates 'YOLO26 loses' from 'YOLO26 was stopped early'.
+#
+# yolo26n_ep50 is NOT a grid winner and must not be described as one: it is
+# yolo26n with one number changed. The locked arm stays locked, because
+# raising the budget after seeing the CV result would be selection on test.
+#
+# If ep50 STILL saturates its budget -- a high mean fraction and many folds at
+# >= 96 % -- that is a different finding from '25 was simply too few', and the
+# manuscript needs to say which.
+#
+# built from 264 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
+# scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
+# corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T03:38:46+00:00
+arm_a,arm_b,protocol,n_folds,mean_diff,ci95_corrected_low,ci95_corrected_high,p_corrected,corrected_excludes_zero,a_wins,b_wins
+yolo26n_ep50,yolo26n,uniform,15,0.0006405086523635362,-0.029517562710125032,0.030798580014852105,0.9643108658734466,False,7,8
+yolo26n_ep50,mobilenetv3_small,uniform,15,-0.06629017243188638,-0.16845418442234955,0.03587383955857679,0.18574061786886614,False,4,11

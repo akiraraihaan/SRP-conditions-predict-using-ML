@@ -1,0 +1,54 @@
+# Macro-F1 recomputed after merging classes INSIDE the stored confusion
+# matrices. No retraining: merging classes i and j sums rows i,j and columns
+# i,j, which is exactly what it means for a confusion between them to stop
+# being an error. Same folds, same models, same predictions.
+#
+# READ THIS WITH taxonomy_merge_pairs.csv. Fewer classes raises macro-F1
+# mechanically, so a gain here means nothing on its own. The control is the
+# ranking of all 45 possible single-pair merges: the claim holds only if the
+# hypothesised pairs sit at the TOP of that ranking while the MEDIAN merge
+# gains almost nothing.
+#
+# M4 is not a plausible taxonomy and is labelled as such -- it fuses faults
+# with different physical causes. It is an upper bound, not a proposal.
+#
+# gain_* columns carry the Nadeau-Bengio correction, because baseline and
+# merged are measured on the same overlapping folds.
+#
+# built from 75 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
+# scripts: 03_run_cv
+# corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T08:57:27+00:00
+arm,scenario,n_classes,n_folds,macro_f1_mean,macro_f1_sd,plausible_taxonomy,note,gain_mean,gain_ci95_corrected_low,gain_ci95_corrected_high,gain_p_corrected,gain_corrected_excludes_zero,protocol
+mobilenetv3_small,baseline,10,15,0.590005,0.074196,True,the 10-class taxonomy as trained and reported,,,,,,uniform
+mobilenetv3_small,M1,9,15,0.626343,0.069399,True,"severity merge: vibration and severe_vibration are the same fault at two intensities, and the card shapes differ by degree",0.036337,0.01997,0.052705,0.000304,True,uniform
+mobilenetv3_small,M2,9,15,0.629284,0.065293,True,collapsed-card pair: pump_leakage and natural_flowing both produce a near-degenerate card with little enclosed area,0.039279,0.017366,0.061192,0.001787,True,uniform
+mobilenetv3_small,M3,8,15,0.675074,0.058577,True,M1 and M2 together -- the taxonomy this paper actually proposes,0.085069,0.053688,0.11645,4.5e-05,True,uniform
+mobilenetv3_small,M4,5,15,0.710228,0.052371,False,"NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, plus M2. Reported as an upper bound only: it fuses faults with different physical causes and different remedies",0.120222,0.067631,0.172814,0.000233,True,uniform
+mobilenetv3_small,M5,7,15,0.725356,0.056492,True,"the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 this fuses no unrelated physics: it is one severity continuum (vibration / severe_vibration) together with the collapsed-card pair (pump_leakage / natural_flowing) that the confusion structure says the models cannot separate. It is an OBSERVATION ABOUT ERROR STRUCTURE, not a recommendation to adopt a 7-class taxonomy",0.135351,0.094467,0.176235,5e-06,True,uniform
+resnet18,baseline,10,15,0.601989,0.048938,True,the 10-class taxonomy as trained and reported,,,,,,uniform
+resnet18,M1,9,15,0.639306,0.04245,True,"severity merge: vibration and severe_vibration are the same fault at two intensities, and the card shapes differ by degree",0.037317,0.015159,0.059475,0.00283,True,uniform
+resnet18,M2,9,15,0.643312,0.053049,True,collapsed-card pair: pump_leakage and natural_flowing both produce a near-degenerate card with little enclosed area,0.041323,0.021459,0.061186,0.000537,True,uniform
+resnet18,M3,8,15,0.690458,0.044851,True,M1 and M2 together -- the taxonomy this paper actually proposes,0.088469,0.061591,0.115347,6e-06,True,uniform
+resnet18,M4,5,15,0.738689,0.028408,False,"NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, plus M2. Reported as an upper bound only: it fuses faults with different physical causes and different remedies",0.1367,0.078802,0.194598,0.000173,True,uniform
+resnet18,M5,7,15,0.734307,0.047817,True,"the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 this fuses no unrelated physics: it is one severity continuum (vibration / severe_vibration) together with the collapsed-card pair (pump_leakage / natural_flowing) that the confusion structure says the models cannot separate. It is an OBSERVATION ABOUT ERROR STRUCTURE, not a recommendation to adopt a 7-class taxonomy",0.132318,0.096644,0.167993,1e-06,True,uniform
+yolo26m,baseline,10,15,0.530062,0.061676,True,the 10-class taxonomy as trained and reported,,,,,,uniform
+yolo26m,M1,9,15,0.556605,0.056321,True,"severity merge: vibration and severe_vibration are the same fault at two intensities, and the card shapes differ by degree",0.026543,0.007958,0.045129,0.008428,True,uniform
+yolo26m,M2,9,15,0.564123,0.065046,True,collapsed-card pair: pump_leakage and natural_flowing both produce a near-degenerate card with little enclosed area,0.034061,0.023042,0.045079,1.1e-05,True,uniform
+yolo26m,M3,8,15,0.598241,0.059417,True,M1 and M2 together -- the taxonomy this paper actually proposes,0.068179,0.046675,0.089684,9e-06,True,uniform
+yolo26m,M4,5,15,0.658787,0.069307,False,"NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, plus M2. Reported as an upper bound only: it fuses faults with different physical causes and different remedies",0.128725,0.091977,0.165473,3e-06,True,uniform
+yolo26m,M5,7,15,0.643579,0.056517,True,"the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 this fuses no unrelated physics: it is one severity continuum (vibration / severe_vibration) together with the collapsed-card pair (pump_leakage / natural_flowing) that the confusion structure says the models cannot separate. It is an OBSERVATION ABOUT ERROR STRUCTURE, not a recommendation to adopt a 7-class taxonomy",0.113517,0.076441,0.150594,1.3e-05,True,uniform
+yolo26n,baseline,10,15,0.523075,0.051226,True,the 10-class taxonomy as trained and reported,,,,,,uniform
+yolo26n,M1,9,15,0.547957,0.054387,True,"severity merge: vibration and severe_vibration are the same fault at two intensities, and the card shapes differ by degree",0.024882,0.012786,0.036978,0.000591,True,uniform
+yolo26n,M2,9,15,0.551048,0.051698,True,collapsed-card pair: pump_leakage and natural_flowing both produce a near-degenerate card with little enclosed area,0.027973,0.014972,0.040975,0.000401,True,uniform
+yolo26n,M3,8,15,0.582537,0.054867,True,M1 and M2 together -- the taxonomy this paper actually proposes,0.059462,0.042411,0.076514,3e-06,True,uniform
+yolo26n,M4,5,15,0.633917,0.06088,False,"NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, plus M2. Reported as an upper bound only: it fuses faults with different physical causes and different remedies",0.110842,0.065953,0.15573,0.000113,True,uniform
+yolo26n,M5,7,15,0.631505,0.052083,True,"the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 this fuses no unrelated physics: it is one severity continuum (vibration / severe_vibration) together with the collapsed-card pair (pump_leakage / natural_flowing) that the confusion structure says the models cannot separate. It is an OBSERVATION ABOUT ERROR STRUCTURE, not a recommendation to adopt a 7-class taxonomy",0.10843,0.082514,0.134347,0.0,True,uniform
+yolo26s,baseline,10,15,0.503887,0.049512,True,the 10-class taxonomy as trained and reported,,,,,,uniform
+yolo26s,M1,9,15,0.536772,0.049768,True,"severity merge: vibration and severe_vibration are the same fault at two intensities, and the card shapes differ by degree",0.032884,0.016285,0.049484,0.00081,True,uniform
+yolo26s,M2,9,15,0.54581,0.053968,True,collapsed-card pair: pump_leakage and natural_flowing both produce a near-degenerate card with little enclosed area,0.041923,0.024355,0.059491,0.000156,True,uniform
+yolo26s,M3,8,15,0.588045,0.054939,True,M1 and M2 together -- the taxonomy this paper actually proposes,0.084158,0.057974,0.110342,7e-06,True,uniform
+yolo26s,M4,5,15,0.611186,0.05885,False,"NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, plus M2. Reported as an upper bound only: it fuses faults with different physical causes and different remedies",0.107299,0.061488,0.153109,0.000186,True,uniform
+yolo26s,M5,7,15,0.624732,0.059537,True,"the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 this fuses no unrelated physics: it is one severity continuum (vibration / severe_vibration) together with the collapsed-card pair (pump_leakage / natural_flowing) that the confusion structure says the models cannot separate. It is an OBSERVATION ABOUT ERROR STRUCTURE, not a recommendation to adopt a 7-class taxonomy",0.120845,0.08246,0.15923,9e-06,True,uniform

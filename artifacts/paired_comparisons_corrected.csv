@@ -1,0 +1,53 @@
+# Paired per-fold differences with the NADEAU-BENGIO correction.
+#
+# THIS FILE SUPERSEDES paired_comparisons.csv FOR INFERENCE.
+#
+# The 15 folds are 5-fold CV repeated 3 times, so every image appears in
+# three test partitions and the folds are not independent. The naive standard
+# error sd/sqrt(n) assumes they are, and is therefore too small.
+#
+# Nadeau & Bengio (2003), 'Inference for the Generalization Error',
+# Machine Learning 52(3):239-281, replace the factor 1/n by
+#
+#     1/n + n_test/n_train
+#
+# which for 5-fold (n_test/n_train = 1/4) and n = 15 widens every interval by
+# sqrt((1/15 + 1/4)/(1/15)) = 2.1794. Bouckaert & Frank (2004), 'Evaluating
+# the Replicability of Significance Tests for Comparing Learning Algorithms',
+# PAKDD, find it the best-behaved of the practical corrected tests.
+#
+# The correction is CONSERVATIVE: it under-rejects rather than over-rejects.
+# A comparison whose corrected interval excludes zero is solid; one whose
+# interval now includes zero is UNPROVEN, not disproven.
+#
+# The deterministic cost objectives -- params, GFLOPs, model size and measured
+# latency -- carry NO interval. They are architectural constants measured once,
+# not estimates from a sample.
+#
+# built from 75 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26s
+# scripts: 03_run_cv
+# corpus: f04c12c0922c6597eb139af66ef91e9f8df56b6e
+# registry sha1: f54363b409c11652
+# generated: 2026-09-24T08:57:27+00:00
+metric,arm_a,arm_b,n_folds,mean_diff,sd_diff,se_naive,se_corrected,ci95_naive_low,ci95_naive_high,ci95_corrected_low,ci95_corrected_high,p_naive,p_corrected,wilcoxon_p,naive_excludes_zero,corrected_excludes_zero,a_wins,b_wins,ties,k_folds,n_test_over_n_train,width_factor,protocol
+accuracy,resnet18,yolo26s,15,0.089376,0.057554,0.01486,0.032387,0.057504,0.121249,0.019913,0.15884,3.2e-05,0.015352,0.000653,True,True,15,0,0,5,0.25,2.179449,uniform
+accuracy,resnet18,yolo26n,15,0.081831,0.0432,0.011154,0.02431,0.057908,0.105755,0.029692,0.133971,4e-06,0.004613,0.000122,True,True,14,1,0,5,0.25,2.179449,uniform
+accuracy,mobilenetv3_small,yolo26s,15,0.076774,0.06912,0.017847,0.038896,0.038497,0.115051,-0.00665,0.160198,0.000731,0.068472,0.00116,True,False,13,2,0,5,0.25,2.179449,uniform
+accuracy,resnet18,yolo26m,15,0.075323,0.058625,0.015137,0.03299,0.042857,0.107788,0.004566,0.146079,0.000203,0.038558,0.000854,True,True,14,1,0,5,0.25,2.179449,uniform
+accuracy,mobilenetv3_small,yolo26n,15,0.069229,0.087302,0.022541,0.049128,0.020883,0.117576,-0.03614,0.174598,0.008293,0.180611,0.017036,True,False,12,3,0,5,0.25,2.179449,uniform
+accuracy,mobilenetv3_small,yolo26m,15,0.06272,0.081748,0.021107,0.046002,0.01745,0.107991,-0.035944,0.161385,0.010106,0.194273,0.012436,True,False,12,3,0,5,0.25,2.179449,uniform
+accuracy,yolo26m,yolo26s,15,0.014054,0.048332,0.012479,0.027198,-0.012711,0.040819,-0.044279,0.072387,0.279024,0.613412,0.660268,False,False,7,7,1,5,0.25,2.179449,uniform
+accuracy,resnet18,mobilenetv3_small,15,0.012602,0.078682,0.020316,0.044277,-0.03097,0.056175,-0.082362,0.107567,0.545007,0.780097,0.571987,False,False,7,7,1,5,0.25,2.179449,uniform
+accuracy,yolo26n,yolo26s,15,0.007545,0.045972,0.01187,0.02587,-0.017913,0.033003,-0.04794,0.06303,0.535265,0.77483,0.777351,False,False,7,7,1,5,0.25,2.179449,uniform
+accuracy,yolo26m,yolo26n,15,0.006509,0.039032,0.010078,0.021965,-0.015106,0.028124,-0.040601,0.053618,0.528828,0.771327,0.363198,False,False,9,6,0,5,0.25,2.179449,uniform
+f1_macro,resnet18,yolo26s,15,0.098102,0.060022,0.015498,0.033776,0.064863,0.131341,0.025659,0.170544,1.9e-05,0.011539,6.1e-05,True,True,15,0,0,5,0.25,2.179449,uniform
+f1_macro,mobilenetv3_small,yolo26s,15,0.086118,0.069776,0.018016,0.039265,0.047477,0.124759,0.001903,0.170334,0.000293,0.045675,0.000854,True,True,13,2,0,5,0.25,2.179449,uniform
+f1_macro,resnet18,yolo26n,15,0.078914,0.047517,0.012269,0.02674,0.0526,0.105229,0.021564,0.136265,1.6e-05,0.010521,0.000183,True,True,14,1,0,5,0.25,2.179449,uniform
+f1_macro,resnet18,yolo26m,15,0.071927,0.066356,0.017133,0.037341,0.03518,0.108674,-0.008161,0.152015,0.000894,0.074626,0.002625,True,False,14,1,0,5,0.25,2.179449,uniform
+f1_macro,mobilenetv3_small,yolo26n,15,0.066931,0.092397,0.023857,0.051995,0.015763,0.118098,-0.044587,0.178448,0.014027,0.218878,0.021545,True,False,12,3,0,5,0.25,2.179449,uniform
+f1_macro,mobilenetv3_small,yolo26m,15,0.059943,0.082184,0.02122,0.046247,0.014432,0.105455,-0.039247,0.159134,0.013502,0.215884,0.021545,True,False,11,4,0,5,0.25,2.179449,uniform
+f1_macro,yolo26m,yolo26s,15,0.026175,0.056261,0.014526,0.03166,-0.004981,0.057331,-0.041728,0.094078,0.093133,0.422243,0.229309,False,False,7,8,0,5,0.25,2.179449,uniform
+f1_macro,yolo26n,yolo26s,15,0.019187,0.05396,0.013933,0.030365,-0.010695,0.04907,-0.045939,0.084314,0.190081,0.537642,0.276855,False,False,8,7,0,5,0.25,2.179449,uniform
+f1_macro,resnet18,mobilenetv3_small,15,0.011984,0.081385,0.021013,0.045798,-0.033086,0.057053,-0.086243,0.11021,0.577523,0.797391,0.678772,False,False,7,8,0,5,0.25,2.179449,uniform
+f1_macro,yolo26m,yolo26n,15,0.006987,0.041694,0.010765,0.023463,-0.016102,0.030077,-0.043335,0.05731,0.526811,0.770226,0.421204,False,False,11,4,0,5,0.25,2.179449,uniform
