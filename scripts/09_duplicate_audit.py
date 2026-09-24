@@ -1,13 +1,12 @@
 #!/usr/bin/env python
-"""09 -- NEAR-duplicate audit. The leak byte hashing cannot see.
+"""09 -- NEAR-duplicate audit. Four checks, because one of them lies.
 
     python scripts/09_duplicate_audit.py --data-root /content/dataset
     python scripts/09_duplicate_audit.py --data-root ... --dry-run
-    python scripts/09_duplicate_audit.py --data-root ... --threshold 5
+    python scripts/09_duplicate_audit.py --data-root ... --threshold 2
 
-CPU only. No training, no GPU, no registry writes. Reads the same
-artifacts/image_index.csv that 00_build_folds.py built the folds from, so the
-indices here mean exactly what they mean there.
+CPU only. No training, no GPU, no registry writes, and it CHANGES NOTHING --
+not folds.json, not the registry, not the dataset.
 
 WHAT THIS IS NOT
 ----------------
@@ -16,32 +15,55 @@ groups covering 27 files, every group carrying conflicting labels, all members
 excluded, leaving 668 unique sha1s, and 00_build_folds.py asserts that no sha1
 appears on both sides of any fold.
 
-WHAT IT IS
-----------
-Two screenshots of the same dynamometer card taken seconds apart differ by one
-pixel of noise or one pixel of crop. Their sha1s are unrelated, so every check
-above passes, and the two images land in different folds -- one in train, one
-in test -- and the model is scored on an image it effectively trained on. The
-measured macro-F1 is then optimistic by an unknown amount, and nothing in the
-pipeline can detect it, because at the byte level the corpus is clean.
+WHAT IT IS, AND WHY THE HASH IS NOT ENOUGH
+------------------------------------------
+Two screenshots of the same card seconds apart differ by a pixel of noise, so
+their sha1s are unrelated and every byte-level check passes. A perceptual hash
+sees them. That is the leak this script is for.
 
-Perceptual hashing sees it. Three are computed -- phash, dhash, average_hash --
-because each has a known blind spot and a finding that rests on one of them is
-a finding about that hash. phash is the primary (it is the most robust to
-rescaling and mild compression); the other two are corroboration, and a pair
-flagged by only one hash is reported as weaker evidence rather than dropped.
+But a perceptual hash is a DCT over an 8x8 reduction, and a dynamometer card is
+a thin curve on a uniform white background. Almost all of the low-frequency
+energy is identical across the entire corpus WHATEVER THE CLASS, so a Hamming
+threshold of 5/64 -- sensible for photographs -- largely measures SHAPE FAMILY
+here, not identity. Run on this corpus it flags 116 pairs, only ONE of them at
+distance 0, and two thirds of the resulting clusters carry more than one label.
+A true duplicate cannot have two labels: every conflicting-label duplicate was
+removed at the sha1 stage. The largest cluster spans exactly the classes this
+paper independently finds morphologically confusable -- the finding reappearing
+as an artefact.
 
-THE DECISIVE NUMBER is not how many near-duplicates exist. It is in how many of
-the 15 folds a near-duplicate cluster STRADDLES the train/test boundary. A
-cluster whose members all sit on the same side of every fold leaks nothing.
+So the hash only PROPOSES candidates. Four independent checks decide:
 
-The dev split gets the same check, because the hyperparameters were selected on
-it -- a leak there inflates the selection, not the reported score, and that is a
-different and quieter problem.
+  1. PIXELS. Every flagged pair is letterboxed with our own code and compared
+     by SSIM and normalised RMSE. A genuine duplicate is SSIM > 0.99. The count
+     above 0.98 -- not the Hamming count -- is what drives any decision.
 
-THIS SCRIPT CHANGES NOTHING. It does not touch folds.json, the registry, or the
-dataset. If clusters do straddle folds it prints the two remedies with what each
-costs in re-runs and stops for a human decision.
+  2. TIMESTAMPS. The filenames carry capture times. A re-capture of one card is
+     seconds to minutes apart; two survey sessions are hours or days apart. The
+     within-cluster spread is reported against a NULL: the same statistic for
+     random same-class pairs. If flagged pairs are no closer in time than the
+     null, they are not duplicates.
+
+  3. WITHIN-CLASS vs BETWEEN-CLASS. A duplicate carries its original's label,
+     so real duplication is overwhelmingly within-class. If flagged pairs are
+     spread across classes at roughly the base rate, the hash is detecting
+     class morphology and the audit is measuring the wrong thing.
+
+  4. THRESHOLD SENSITIVITY. The verdict is re-reported at 0, 1, 2 and 5, so
+     whether the conclusion belongs to the data or to an arbitrary number is
+     visible rather than buried.
+
+And a contact sheet of the ten largest clusters --
+artifacts/near_duplicate_contact_sheet.png -- because if a 37-image cluster is
+visibly 37 different cards, one glance settles it and no statistic is needed.
+
+THE REMEDY SECTION ONLY FIRES when the pixel AND timestamp evidence agree that
+duplicates are real AND a confirmed cluster straddles a fold. It reports how
+many pairs survive all the checks, never how many the hash flagged.
+
+The dev split gets the straddle check too, because the hyperparameters were
+selected on it -- a leak there inflates the selection, not the reported score,
+which is quieter and just as real.
 """
 
 from __future__ import annotations
@@ -49,8 +71,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import re
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
+
+import numpy as np
 
 import pandas as pd
 
@@ -229,6 +255,164 @@ def connected_components(pairs: list[tuple[int, int]]) -> list[list[int]]:
 
 
 # --------------------------------------------------------------------------
+# 1. TIMESTAMP EVIDENCE -- the decisive check
+# --------------------------------------------------------------------------
+
+# 692 of the 695 filenames carry a capture time in one of two shapes. The other
+# three are UUIDs and are COUNTED as unparseable rather than guessed at.
+TIMESTAMP_PATTERNS = (
+    (re.compile(r"Screenshot (\d{4}-\d{2}-\d{2}) (\d{6})"), "%Y-%m-%d %H%M%S"),
+    (re.compile(r"IMG_(\d{8})_(\d{6})"), "%Y%m%d %H%M%S"),
+)
+
+
+def parse_timestamp(relpath: str):
+    """The capture time in a filename, or None.
+
+    This is the evidence that settles whether a flagged pair is a duplicate. A
+    re-capture of the same card is SECONDS to minutes apart; two images from
+    different survey sessions are hours or days apart. A perceptual hash cannot
+    tell those apart -- the clock can.
+    """
+    name = Path(relpath).name
+    for pattern, fmt in TIMESTAMP_PATTERNS:
+        match = pattern.search(name)
+        if match:
+            try:
+                return datetime.strptime(" ".join(match.groups()), fmt)
+            except ValueError:
+                return None
+    return None
+
+
+def cluster_time_spread(cluster: list[int], times: dict[int, object]) -> dict:
+    """How far apart in time a cluster's members were captured."""
+    stamps = sorted(t for t in (times.get(i) for i in cluster) if t is not None)
+    if len(stamps) < 2:
+        return {"n_timed": len(stamps), "spread_s": None, "min_gap_s": None}
+    gaps = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
+    return {
+        "n_timed": len(stamps),
+        "spread_s": (stamps[-1] - stamps[0]).total_seconds(),
+        "min_gap_s": min(gaps),
+    }
+
+
+def null_time_gaps(index, times: dict[int, object], n_samples: int = 2000,
+                   seed: int = 0) -> list[float]:
+    """Minimum time gap for RANDOM same-class pairs -- the null.
+
+    Without this the timestamp numbers mean nothing: "these two were captured
+    40 minutes apart" is only evidence if random same-class pairs are typically
+    much further apart. If flagged pairs are no closer in time than the null,
+    they are not duplicates.
+    """
+    import random
+
+    rng = random.Random(seed)
+    by_class: dict[str, list[int]] = {}
+    for _, row in index.iterrows():
+        if bool(row["excluded"]):
+            continue
+        idx = int(row["idx"])
+        if times.get(idx) is not None:
+            by_class.setdefault(row["class"], []).append(idx)
+
+    eligible = [c for c, members in by_class.items() if len(members) > 1]
+    if not eligible:
+        return []
+    gaps = []
+    for _ in range(n_samples):
+        members = by_class[rng.choice(eligible)]
+        a, b = rng.sample(members, 2)
+        gaps.append(abs((times[a] - times[b]).total_seconds()))
+    return sorted(gaps)
+
+
+# --------------------------------------------------------------------------
+# 2. PIXEL-LEVEL CONFIRMATION
+# --------------------------------------------------------------------------
+
+# A genuine duplicate is essentially identical after letterboxing. These are the
+# thresholds the VERDICT uses -- not the Hamming count, which only proposes
+# candidates.
+SSIM_DUPLICATE = 0.98
+SSIM_CERTAIN = 0.99
+
+
+def require_skimage():
+    try:
+        from skimage.metrics import structural_similarity  # noqa: F401
+    except ImportError:
+        raise SystemExit(
+            "scikit-image is not installed.\n"
+            "\n"
+            "    pip install scikit-image\n"
+            "\n"
+            "  It is in requirements.txt. This script refuses to hand-roll\n"
+            "  SSIM: the pixel check is what decides whether 165 GPU re-runs\n"
+            "  happen, and an unvalidated implementation is not something to\n"
+            "  decide that on."
+        )
+    from skimage.metrics import structural_similarity
+
+    return structural_similarity
+
+
+def pixel_similarity(path_a: Path, path_b: Path, image_size: int = 224) -> dict:
+    """SSIM and normalised RMSE between two images, through OUR letterbox.
+
+    Only flagged pairs are compared, so this stays cheap. Our own letterbox is
+    used deliberately: it is the transform the model sees, so "identical after
+    letterboxing" is the property that actually matters for a leak.
+    """
+    structural_similarity = require_skimage()
+    from srpcard.data import load_letterboxed
+
+    a = np.asarray(load_letterboxed(path_a, image_size).convert("L"), dtype=float)
+    b = np.asarray(load_letterboxed(path_b, image_size).convert("L"), dtype=float)
+    ssim = float(structural_similarity(a, b, data_range=255.0))
+    rmse = float(np.sqrt(np.mean((a - b) ** 2)) / 255.0)
+    return {"ssim": round(ssim, 5), "nrmse": round(rmse, 5)}
+
+
+# --------------------------------------------------------------------------
+# 3. THE NULL: within-class against between-class
+# --------------------------------------------------------------------------
+
+
+def class_contingency(pairs, class_of: dict[int, str], index) -> dict:
+    """Are flagged pairs within-class, or spread like the base rate?
+
+    If the hash were detecting DUPLICATION, flagged pairs would be
+    overwhelmingly within-class -- a duplicate of an image has that image's
+    label. If they are spread across classes at roughly the base rate for
+    class pairs, the hash is detecting CLASS MORPHOLOGY and the audit is
+    measuring the wrong thing.
+    """
+    within = sum(1 for a, b in pairs if class_of[a] == class_of[b])
+    between = len(pairs) - within
+
+    counts = Counter(
+        row["class"] for _, row in index.iterrows() if not bool(row["excluded"])
+    )
+    total = sum(counts.values())
+    all_pairs = total * (total - 1) // 2
+    within_pairs = sum(n * (n - 1) // 2 for n in counts.values())
+    base_rate = within_pairs / all_pairs if all_pairs else 0.0
+
+    observed = within / len(pairs) if pairs else 0.0
+    return {
+        "n_flagged": len(pairs),
+        "within_class": within,
+        "between_class": between,
+        "observed_within_rate": round(observed, 4),
+        "base_rate_within": round(base_rate, 4),
+        "enrichment": round(observed / base_rate, 2) if base_rate else None,
+    }
+
+
+# --------------------------------------------------------------------------
 # the decisive check
 # --------------------------------------------------------------------------
 
@@ -279,6 +463,94 @@ def dev_split_straddle(cluster: list[int], dev: dict) -> dict:
         "dev_straddles": len(present) > 1,
         "dev_counts": {name: len(hit) for name, hit in parts.items() if hit},
     }
+
+
+
+# --------------------------------------------------------------------------
+# threshold sensitivity and the contact sheet
+# --------------------------------------------------------------------------
+
+SWEEP_THRESHOLDS = (0, 1, 2, 5)
+
+
+def threshold_sweep(distances, folds, thresholds=SWEEP_THRESHOLDS) -> list[dict]:
+    """The verdict at several thresholds, so its sensitivity is visible.
+
+    5/64 is an arbitrary number borrowed from photographic near-duplicate work.
+    A dynamometer card is a thin curve on a uniform white background, so almost
+    all of the low-frequency energy a perceptual hash measures is identical
+    across the whole corpus whatever the class -- which makes a threshold tuned
+    for photographs far too loose here. Printing the conclusion at 0, 1, 2 and 5
+    shows whether it rests on the data or on the number.
+    """
+    rows = []
+    for threshold in thresholds:
+        flagged = [pair for pair, d in distances.items() if d <= threshold]
+        clusters = connected_components(sorted(flagged))
+        straddling = [c for c in clusters if straddle_report(c, folds)["n_folds_straddled"]]
+        rows.append({
+            "threshold": threshold,
+            "n_pairs": len(flagged),
+            "n_clusters": len(clusters),
+            "n_images": sum(len(c) for c in clusters),
+            "largest_cluster": max((len(c) for c in clusters), default=0),
+            "n_clusters_straddling": len(straddling),
+        })
+    return rows
+
+
+def contact_sheet(clusters, index, data_root: Path, times, out_path: Path,
+                  n_clusters: int = 10, per_row: int = 12, thumb: int = 110):
+    """The ten largest clusters, one per row, labelled with class and time.
+
+    The cheapest check of all, and the one a human can settle in a glance: if a
+    37-image cluster is visibly 37 different cards, no statistic is needed.
+    """
+    from PIL import Image, ImageDraw
+
+    biggest = sorted(clusters, key=len, reverse=True)[:n_clusters]
+    if not biggest:
+        return None
+
+    by_idx = {int(row["idx"]): row for _, row in index.iterrows()}
+    label_h, pad = 26, 4
+    rows = len(biggest)
+    cols = min(per_row, max(len(c) for c in biggest))
+    width = cols * (thumb + pad) + pad + 200
+    height = rows * (thumb + label_h + pad) + pad
+
+    sheet = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(sheet)
+
+    for row_n, cluster in enumerate(biggest):
+        y = pad + row_n * (thumb + label_h + pad)
+        classes = sorted({by_idx[i]["class"] for i in cluster})
+        draw.text(
+            (pad, y + thumb // 2),
+            "cluster %d\nn=%d\n%s" % (row_n + 1, len(cluster),
+                                      "MIXED" if len(classes) > 1 else classes[0][:18]),
+            fill="black",
+        )
+        for col_n, idx in enumerate(cluster[:cols]):
+            row = by_idx[idx]
+            x = 200 + pad + col_n * (thumb + pad)
+            try:
+                with Image.open(data_root / row["relpath"]) as handle:
+                    tile = handle.convert("RGB").resize((thumb, thumb))
+                sheet.paste(tile, (x, y))
+            except Exception:  # noqa: BLE001 - a missing file must not lose the sheet
+                draw.rectangle([x, y, x + thumb, y + thumb], outline="red")
+            stamp = times.get(idx)
+            draw.text(
+                (x, y + thumb + 2),
+                "%s\n%s" % (row["class"][:16],
+                            stamp.strftime("%m-%d %H:%M:%S") if stamp else "no time"),
+                fill="black",
+            )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out_path)
+    return out_path
 
 
 # --------------------------------------------------------------------------
@@ -440,17 +712,108 @@ def main() -> int:
                 "corpus_fingerprint": corpus.get("sha1_of_sorted_included_sha1s"),
             })
 
+    # ---- the three independent checks, computed before any verdict ----
+    #
+    # The hash only PROPOSES candidates. On a thin curve over a uniform white
+    # background a perceptual hash is largely measuring shape family, so a
+    # Hamming threshold borrowed from photographic work flags cards that look
+    # alike rather than cards that are the same. Everything below exists to
+    # tell those apart before anyone is told to spend 165 GPU re-runs.
+
+    rule("evidence")
+
+    # 1. timestamps
+    times = {int(row["idx"]): parse_timestamp(row["relpath"])
+             for _, row in index.iterrows()}
+    n_untimed = sum(1 for idx in {i for c in clusters for i in c}
+                    if times.get(idx) is None)
+    flagged_gaps = sorted(
+        abs((times[a] - times[b]).total_seconds())
+        for a, b in primary
+        if times.get(a) is not None and times.get(b) is not None
+    )
+    null_gaps = null_time_gaps(index, times)
+    print("  timestamps parsed : %d of %d filename(s)"
+          % (sum(1 for v in times.values() if v is not None), len(times)))
+
+    # 2. pixels -- flagged pairs only, so this stays cheap
+    pixel_rows = []
+    for position, (a, b) in enumerate(sorted(primary), 1):
+        similarity = pixel_similarity(
+            data_root / by_idx[a]["relpath"],
+            data_root / by_idx[b]["relpath"],
+            int(load_data_config().get("image_size", 224) or 224),
+        )
+        pixel_rows.append({"a": a, "b": b, **similarity})
+        if not args.quiet and position % 25 == 0:
+            print("  compared %d/%d flagged pair(s)" % (position, len(primary)))
+    confirmed = [r for r in pixel_rows if r["ssim"] > SSIM_DUPLICATE]
+    confirmed_pairs = {(r["a"], r["b"]) for r in confirmed}
+
+    # 3. within-class against between-class
+    class_of = {int(row["idx"]): row["class"] for _, row in index.iterrows()}
+    contingency = class_contingency(sorted(primary), class_of, index)
+
+    # 4. threshold sensitivity
+    sweep = threshold_sweep(distances[PRIMARY_HASH], folds)
+
+    mixed_share = (
+        sum(1 for c in summary_clusters if not c["label_consistent"])
+        / len(summary_clusters) if summary_clusters else 0.0
+    )
+
+    # attach the pixel evidence to each cluster and row
+    ssim_of = {(r["a"], r["b"]): r["ssim"] for r in pixel_rows}
+    for block in summary_clusters:
+        members = set(block["idx"])
+        inside = [(a, b) for a, b in primary if a in members and b in members]
+        block["n_pairs"] = len(inside)
+        block["confirmed_pairs"] = sum(1 for pair in inside if pair in confirmed_pairs)
+        scores = [ssim_of[pair] for pair in inside if pair in ssim_of]
+        block["max_ssim"] = max(scores) if scores else None
+        spread = cluster_time_spread(block["idx"], times)
+        block.update(spread)
+    confirmed_by_cluster = {b["cluster"]: b["confirmed_pairs"] for b in summary_clusters}
+    max_ssim_by_cluster = {b["cluster"]: b["max_ssim"] for b in summary_clusters}
+    for row in rows:
+        row["cluster_confirmed_pairs"] = confirmed_by_cluster.get(row["cluster"], 0)
+        row["cluster_max_ssim"] = max_ssim_by_cluster.get(row["cluster"])
+        row["timestamp"] = times.get(row["idx"])
+
+    # 5. the contact sheet -- the cheapest check of all
+    sheet_path = artifacts / "near_duplicate_contact_sheet.png"
+    sheet_name = sheet_path.name
+    try:
+        contact_sheet(clusters, index, data_root, times, sheet_path)
+        print("  contact sheet     : %s" % sheet_name)
+    except Exception as exc:  # noqa: BLE001 - a missing sheet must not lose the audit
+        print("  contact sheet     : FAILED (%s: %s)" % (type(exc).__name__, exc))
+
     # ---- the verdict ----
     rule("VERDICT")
     straddling = [c for c in summary_clusters if c["n_folds_straddled"] > 0]
     dev_straddling = [c for c in summary_clusters if c.get("dev_straddles")]
 
-    print("  near-duplicate clusters      : %d" % len(clusters))
+    print("  CANDIDATE clusters (hash)    : %d" % len(clusters))
     print("  images involved              : %d of %d"
           % (sum(c["size"] for c in summary_clusters), len(included)))
-    print("  clusters with mixed labels   : %d"
-          % sum(1 for c in summary_clusters if not c["label_consistent"]))
+    print("  clusters with MIXED labels   : %d of %d"
+          % (sum(1 for c in summary_clusters if not c["label_consistent"]),
+             len(summary_clusters)))
+    print("  pairs confirmed by pixels    : %d of %d  (SSIM > %.2f)"
+          % (len(confirmed), len(primary), SSIM_DUPLICATE))
     print()
+
+    if mixed_share > 0.5:
+        print("  WARNING -- %.0f %% of clusters carry MORE THAN ONE LABEL." % (100 * mixed_share))
+        print("  A true duplicate cannot have two labels: every conflicting-label")
+        print("  duplicate was already removed at the sha1 stage, all 27 of them.")
+        print("  Mixed-label clusters mean the hash is grouping cards that LOOK")
+        print("  alike, not cards that ARE the same. On line art over a uniform")
+        print("  background almost all of the low-frequency energy a perceptual")
+        print("  hash measures is shared corpus-wide, so this is the expected")
+        print("  failure mode rather than a surprising one.")
+        print()
 
     if not clusters:
         print("  NO near-duplicate cluster was found at Hamming <= %d." % args.threshold)
@@ -471,6 +834,74 @@ def main() -> int:
                   % (block["cluster"], block["size"], block["n_folds_straddled"],
                      "yes" if block["label_consistent"] else "NO",
                      ", ".join(block["labels"])))
+
+    # ---- the three independent checks ----
+    rule("IS THIS DUPLICATION, OR CLASS MORPHOLOGY?")
+
+    print("  1. PIXELS -- the check that should drive any decision")
+    if pixel_rows:
+        ssims = sorted(r["ssim"] for r in pixel_rows)
+        print("     SSIM over %d flagged pair(s):" % len(pixel_rows))
+        print("       min %.4f   p25 %.4f   median %.4f   p75 %.4f   max %.4f"
+              % (ssims[0], ssims[len(ssims)//4], ssims[len(ssims)//2],
+                 ssims[3*len(ssims)//4], ssims[-1]))
+        print("       above %.2f : %d        above %.2f : %d"
+              % (SSIM_DUPLICATE, len(confirmed), SSIM_CERTAIN,
+                 sum(1 for r in pixel_rows if r["ssim"] > SSIM_CERTAIN)))
+        print("       A genuine duplicate is SSIM > 0.99 and RMSE near zero.")
+    else:
+        print("     no flagged pairs to compare")
+
+    print()
+    print("  2. TIMESTAMPS -- a re-capture is seconds apart, a second survey is not")
+    if null_gaps and flagged_gaps:
+        def pct(values, q):
+            return values[min(len(values) - 1, int(q * len(values)))]
+        print("     minimum within-pair gap, seconds:")
+        print("       %-22s median %10.0f   p10 %10.0f   min %8.0f"
+              % ("flagged pairs", pct(flagged_gaps, 0.5), pct(flagged_gaps, 0.10),
+                 flagged_gaps[0]))
+        print("       %-22s median %10.0f   p10 %10.0f   min %8.0f"
+              % ("random same-class (null)", pct(null_gaps, 0.5), pct(null_gaps, 0.10),
+                 null_gaps[0]))
+        ratio = pct(flagged_gaps, 0.5) / max(pct(null_gaps, 0.5), 1.0)
+        print("       flagged/null median ratio: %.2f" % ratio)
+        if ratio > 0.5:
+            print("       Flagged pairs are NOT meaningfully closer in time than")
+            print("       random same-class pairs. They are not duplicates.")
+        else:
+            print("       Flagged pairs ARE much closer in time -- consistent with")
+            print("       re-captures of the same card.")
+    else:
+        print("     not enough parsed timestamps to compare")
+    if n_untimed:
+        print("     %d image(s) have no parseable timestamp and are excluded from"
+              % n_untimed)
+        print("     this check rather than guessed at.")
+
+    print()
+    print("  3. WITHIN-CLASS vs BETWEEN-CLASS -- the null that decides what is measured")
+    print("     %-28s %8d" % ("flagged pairs, same class", contingency["within_class"]))
+    print("     %-28s %8d" % ("flagged pairs, different class",
+                              contingency["between_class"]))
+    print("     %-28s %8.4f" % ("observed within-class rate",
+                                contingency["observed_within_rate"]))
+    print("     %-28s %8.4f" % ("base rate for class pairs",
+                                contingency["base_rate_within"]))
+    print("     %-28s %8s" % ("enrichment", contingency["enrichment"]))
+    if contingency["enrichment"] is not None and contingency["enrichment"] < 2.0:
+        print("     Barely enriched over the base rate. If the hash were detecting")
+        print("     DUPLICATION, flagged pairs would be overwhelmingly within-class,")
+        print("     because a duplicate of an image carries that image's label.")
+
+    print()
+    print("  4. THRESHOLD SENSITIVITY -- is the conclusion the data's, or the number's?")
+    print("     %-10s %8s %10s %9s %12s %14s"
+          % ("threshold", "pairs", "clusters", "images", "largest", "straddling"))
+    for row in sweep:
+        print("     %-10d %8d %10d %9d %12d %14d"
+              % (row["threshold"], row["n_pairs"], row["n_clusters"],
+                 row["n_images"], row["largest_cluster"], row["n_clusters_straddling"]))
 
     if dev:
         print()
@@ -502,6 +933,24 @@ def main() -> int:
         "n_clusters": len(clusters),
         "n_clusters_straddling_a_fold": len(straddling),
         "n_clusters_straddling_dev": len(dev_straddling),
+        "n_pairs_confirmed_by_pixels": len(confirmed),
+        "ssim_duplicate_threshold": SSIM_DUPLICATE,
+        "ssim_certain_threshold": SSIM_CERTAIN,
+        "pixel_pairs": pixel_rows,
+        "mixed_label_cluster_share": round(mixed_share, 4),
+        "class_contingency": contingency,
+        "threshold_sweep": sweep,
+        "timestamp_gaps_flagged_s": flagged_gaps[:500],
+        "timestamp_gaps_null_s": null_gaps[:500],
+        "n_images_without_timestamp": n_untimed,
+        "contact_sheet": sheet_name,
+        "verdict_rests_on": (
+            "pixel SSIM and timestamp evidence, NOT Hamming distance. The hash "
+            "proposes candidates; on line art over a uniform background it "
+            "largely measures shape family, so a threshold borrowed from "
+            "photographic work flags cards that look alike rather than cards "
+            "that are the same."
+        ),
         "clusters": summary_clusters,
         "corpus_fingerprint": corpus.get("sha1_of_sorted_included_sha1s"),
         "n_folds": len(folds),
@@ -529,15 +978,62 @@ def main() -> int:
     print("\n[artifacts] wrote %s (%d row(s))" % (out_csv.name, len(frame)))
     print("[artifacts] wrote %s" % out_json.name)
 
-    if straddling or dev_straddling:
-        rule("STOPPING FOR A DECISION")
-        print(REMEDIES)
+    # The remedy fires ONLY when the pixel and timestamp evidence agree that
+    # duplicates are real. Recommending 165 GPU re-runs on Hamming distance
+    # alone -- on line art, at a threshold borrowed from photographic work --
+    # is how a measurement of class morphology turns into a refrozen corpus.
+    confirmed_straddling = [
+        c for c in summary_clusters
+        if c["n_folds_straddled"] > 0 and c.get("confirmed_pairs", 0) > 0
+    ]
+    timestamps_agree = bool(
+        null_gaps and flagged_gaps
+        and (sorted(flagged_gaps)[len(flagged_gaps) // 2]
+             / max(sorted(null_gaps)[len(null_gaps) // 2], 1.0)) <= 0.5
+    )
+
+    rule("VERDICT")
+    print("  hash-flagged pairs                 : %d" % len(primary))
+    print("  surviving the pixel check          : %d" % len(confirmed))
+    print("  in clusters that straddle a fold   : %d cluster(s)"
+          % len(confirmed_straddling))
+    print("  timestamps consistent with re-capture: %s"
+          % ("yes" if timestamps_agree else "NO"))
+    print()
+
+    if not confirmed:
+        print("  NO PAIR SURVIVES THE PIXEL CHECK. Nothing here is a duplicate.")
+        print("  The hash flagged %d pair(s), and not one of them is two copies of" % len(primary))
+        print("  the same card. On a thin curve over a uniform background a")
+        print("  perceptual hash measures shape family, not identity.")
+        print()
+        print("  NO REMEDY IS RECOMMENDED. Do not refreeze the folds. Do not")
+        print("  re-run anything. The cross-validation stands as published.")
+        print()
+        print("  Look at %s to confirm this by eye." % sheet_name)
+        return 0
+
+    if not confirmed_straddling:
+        print("  %d pair(s) survive the pixel check, but no confirmed cluster" % len(confirmed))
+        print("  straddles a fold boundary, so nothing leaks into a reported score.")
+        print("  NO REMEDY IS RECOMMENDED.")
+        return 0
+
+    if not timestamps_agree:
+        print("  %d confirmed pair(s) straddle a fold, BUT the timestamp evidence"
+              % len(confirmed))
+        print("  does not support them being re-captures: flagged pairs are no")
+        print("  closer in time than random same-class pairs. Two of three checks")
+        print("  disagree, so this is NOT settled and no remedy is recommended yet.")
+        print("  Inspect %s before deciding anything." % sheet_name)
         return 1
 
-    rule("DONE")
-    print("  Nothing to decide: the folds are clean under this threshold.\n"
-          "  folds.json, the registry and the dataset are untouched.")
-    return 0
+    rule("STOPPING FOR A DECISION -- all three checks agree")
+    print("  %d pair(s) are confirmed duplicates by pixels AND timestamps, and"
+          % len(confirmed))
+    print("  they straddle fold boundaries in %d cluster(s)." % len(confirmed_straddling))
+    print(REMEDIES)
+    return 1
 
 
 if __name__ == "__main__":

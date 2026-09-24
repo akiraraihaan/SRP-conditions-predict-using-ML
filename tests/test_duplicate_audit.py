@@ -237,3 +237,223 @@ def test_three_hashes_are_computed_with_one_named_primary(audit):
     assert audit.PRIMARY_HASH == "phash"
     assert audit.HASH_SIZE == 8
     assert audit.DEFAULT_THRESHOLD == 5
+
+
+# ============================================================================
+# The hash only PROPOSES. These four checks decide.
+#
+# A perceptual hash is a DCT over an 8x8 reduction, and a dynamometer card is a
+# thin curve on a uniform white background, so almost all the low-frequency
+# energy is shared corpus-wide whatever the class. A threshold borrowed from
+# photographic work therefore measures shape family, not identity -- and on this
+# corpus it flagged 116 pairs with exactly ONE at distance 0 and two thirds of
+# the clusters carrying more than one label.
+# ============================================================================
+
+
+# -------------------------------------------------------------- timestamps
+
+
+def test_both_filename_shapes_in_the_corpus_parse(audit):
+    """692 of the 695 filenames carry a capture time in one of two shapes."""
+    from datetime import datetime
+
+    assert audit.parse_timestamp(
+        "natural_flowing/Screenshot 2026-05-05 140648.png"
+    ) == datetime(2026, 5, 5, 14, 6, 48)
+    assert audit.parse_timestamp(
+        "collide_pump_and_vibration/IMG_20260524_101625.jpg"
+    ) == datetime(2026, 5, 24, 10, 16, 25)
+
+
+def test_an_unparseable_name_returns_none_rather_than_guessing(audit):
+    """Three files in the corpus are UUIDs. They are COUNTED, never invented."""
+    assert audit.parse_timestamp(
+        "natural_flowing/09300c24-3104-4285-ac84-16181e9aee2c.png"
+    ) is None
+
+
+def test_a_nonsense_date_is_not_accepted(audit):
+    assert audit.parse_timestamp("x/Screenshot 2026-13-45 999999.png") is None
+
+
+def test_the_time_spread_of_a_recapture_is_seconds(audit):
+    from datetime import datetime
+
+    times = {
+        1: datetime(2026, 5, 5, 14, 6, 48),
+        2: datetime(2026, 5, 5, 14, 6, 51),
+    }
+    spread = audit.cluster_time_spread([1, 2], times)
+    assert spread["spread_s"] == 3.0
+    assert spread["min_gap_s"] == 3.0
+    assert spread["n_timed"] == 2
+
+
+def test_two_survey_sessions_are_days_apart(audit):
+    from datetime import datetime
+
+    times = {1: datetime(2026, 5, 5, 14, 0, 0), 2: datetime(2026, 5, 8, 9, 0, 0)}
+    assert audit.cluster_time_spread([1, 2], times)["spread_s"] > 86400
+
+
+def test_an_untimed_member_does_not_break_the_spread(audit):
+    from datetime import datetime
+
+    times = {1: datetime(2026, 5, 5, 14, 0, 0), 2: None}
+    spread = audit.cluster_time_spread([1, 2], times)
+    assert spread["n_timed"] == 1
+    assert spread["spread_s"] is None
+
+
+def test_the_null_samples_same_class_pairs_only(audit):
+    """Without the null, "these two are 40 minutes apart" means nothing."""
+    from datetime import datetime, timedelta
+
+    import pandas as pd
+
+    base = datetime(2026, 5, 5, 12, 0, 0)
+    index = pd.DataFrame([
+        {"idx": i, "relpath": "c/%d.png" % i,
+         "class": "a" if i < 5 else "b", "sha1": str(i), "excluded": False}
+        for i in range(10)
+    ])
+    times = {i: base + timedelta(hours=i) for i in range(10)}
+
+    gaps = audit.null_time_gaps(index, times, n_samples=200, seed=1)
+
+    assert len(gaps) == 200
+    assert gaps == sorted(gaps)
+    # within class "a" the maximum gap is 4 h; within "b" also 4 h
+    assert max(gaps) <= 4 * 3600
+
+
+# ------------------------------------------------------------------ pixels
+
+
+def test_the_verdict_thresholds_are_declared(audit):
+    assert audit.SSIM_DUPLICATE == 0.98
+    assert audit.SSIM_CERTAIN == 0.99
+
+
+def test_ssim_is_not_hand_rolled(audit):
+    """The pixel check decides whether 165 GPU re-runs happen. That is not a
+    thing to settle with an unvalidated implementation."""
+    import inspect
+
+    source = inspect.getsource(audit.require_skimage)
+    assert "refuses to hand-roll" in source
+    assert "pip install scikit-image" in source
+
+
+def test_pixel_similarity_uses_our_own_letterbox(audit):
+    """"Identical after letterboxing" is the property that matters for a leak,
+    because the letterbox is the transform the model sees."""
+    import inspect
+
+    source = inspect.getsource(audit.pixel_similarity)
+    assert "load_letterboxed" in source
+    assert "ssim" in source and "nrmse" in source
+
+
+# ------------------------------------------- within-class vs between-class
+
+
+def test_real_duplication_is_overwhelmingly_within_class(audit):
+    import pandas as pd
+
+    index = pd.DataFrame([
+        {"idx": i, "relpath": "c/%d.png" % i,
+         "class": "a" if i < 10 else "b", "sha1": str(i), "excluded": False}
+        for i in range(20)
+    ])
+    class_of = {int(r["idx"]): r["class"] for _, r in index.iterrows()}
+    pairs = [(0, 1), (2, 3), (4, 5), (10, 11)]        # all within class
+
+    result = audit.class_contingency(pairs, class_of, index)
+
+    assert result["within_class"] == 4
+    assert result["between_class"] == 0
+    assert result["observed_within_rate"] == 1.0
+    assert result["enrichment"] > 2.0
+
+
+def test_morphology_shows_up_as_a_base_rate_spread(audit):
+    """If flagged pairs are spread across classes like the base rate, the hash
+    is detecting class shape, not duplication."""
+    import pandas as pd
+
+    index = pd.DataFrame([
+        {"idx": i, "relpath": "c/%d.png" % i,
+         "class": "a" if i < 10 else "b", "sha1": str(i), "excluded": False}
+        for i in range(20)
+    ])
+    class_of = {int(r["idx"]): r["class"] for _, r in index.iterrows()}
+    pairs = [(0, 11), (1, 12), (2, 13), (3, 14)]      # all BETWEEN classes
+
+    result = audit.class_contingency(pairs, class_of, index)
+
+    assert result["within_class"] == 0
+    assert result["observed_within_rate"] == 0.0
+    assert result["enrichment"] == 0.0
+
+
+# ----------------------------------------------------- threshold sensitivity
+
+
+def test_the_sweep_reports_every_threshold_asked_for(audit):
+    assert audit.SWEEP_THRESHOLDS == (0, 1, 2, 5)
+
+    distances = {(1, 2): 0, (1, 3): 2, (2, 3): 5, (4, 5): 9}
+    folds = [fold(0, 0, train=[1, 2], test=[3, 4, 5])]
+
+    sweep = audit.threshold_sweep(distances, folds)
+
+    assert [row["threshold"] for row in sweep] == [0, 1, 2, 5]
+    assert sweep[0]["n_pairs"] == 1          # only the distance-0 pair
+    assert sweep[3]["n_pairs"] == 3
+    assert sweep[0]["n_clusters"] == 1
+
+
+def test_a_conclusion_that_only_holds_at_5_is_visible_as_such(audit):
+    """The whole point of the sweep: if nothing is flagged at 0-2 and the
+    finding appears only at 5, it belongs to the number, not the data."""
+    distances = {(1, 2): 5, (3, 4): 5}
+    folds = [fold(0, 0, train=[1, 3], test=[2, 4])]
+
+    sweep = audit.threshold_sweep(distances, folds)
+
+    assert sweep[0]["n_pairs"] == 0 and sweep[0]["n_clusters_straddling"] == 0
+    assert sweep[3]["n_pairs"] == 2 and sweep[3]["n_clusters_straddling"] == 2
+
+
+# --------------------------------------------------------------- the verdict
+
+
+def test_the_remedy_is_gated_on_the_pixel_and_time_evidence(audit):
+    """Recommending 165 re-runs on Hamming distance alone is how a measurement
+    of class morphology turns into a refrozen corpus."""
+    source = (REPO_ROOT / "scripts" / "09_duplicate_audit.py").read_text(encoding="utf-8")
+
+    assert "NO PAIR SURVIVES THE PIXEL CHECK" in source
+    assert "NO REMEDY IS RECOMMENDED" in source
+    assert "confirmed_straddling" in source
+    assert "timestamps_agree" in source
+    # the remedy text must sit behind all three
+    remedy_at = source.index("STOPPING FOR A DECISION -- all three checks agree")
+    gate_at = source.index("if not confirmed:")
+    assert gate_at < remedy_at, "the remedy must be gated, not printed first"
+
+
+def test_mixed_labels_are_called_out_as_the_hash_failing(audit):
+    source = (REPO_ROOT / "scripts" / "09_duplicate_audit.py").read_text(encoding="utf-8")
+    assert "MORE THAN ONE LABEL" in source
+    assert "A true duplicate cannot have two labels" in source
+
+
+def test_a_contact_sheet_is_produced_for_the_largest_clusters(audit):
+    import inspect
+
+    source = inspect.getsource(audit.contact_sheet)
+    assert "n_clusters: int = 10" in source
+    assert "MIXED" in source, "a mixed-label row must be labelled as such"

@@ -766,6 +766,49 @@ Only what git never held needs `backfill_efficiency.py`. That script now:
   field it excluded, before anything is written.
 
 
+## 4.11b The near-duplicate audit flags shape family, not duplicates
+
+`scripts/09_duplicate_audit.py` at the default threshold reports 33 clusters
+over 116 flagged pairs. **Read none of that as duplication without the other
+four checks**, because the hash is very likely measuring class morphology.
+
+Why it fails here. A perceptual hash is a DCT over an 8x8 reduction. A
+dynamometer card is a thin curve on a uniform white background, so nearly all
+of the low-frequency energy is identical across the whole corpus whatever the
+class. A Hamming threshold of 5/64, which is sensible for photographs, is far
+too loose for line art on white.
+
+What the first run actually showed:
+
+| symptom | reading |
+| --- | --- |
+| exactly **one** pair at distance 0 | a genuine re-screenshot lands at 0-2; 106 of 116 pairs sit at 4-5 |
+| only **2** pairs flagged by all three hashes, of 116 / 62 / 439 | the three hashes barely agree |
+| **24 of 33** clusters carry MIXED labels | a true duplicate cannot have two labels -- all 27 conflicting-label duplicates were removed at the sha1 stage |
+| cluster 21 spans natural_flowing, pump_leakage, severe_vibration | exactly the classes this paper independently finds confusable: the finding reappearing as an artefact |
+
+So the hash only PROPOSES candidates. Four checks decide, and the remedy
+section fires only when they agree:
+
+1. **Pixels.** Every flagged pair letterboxed with our own code, compared by
+   SSIM and normalised RMSE. A genuine duplicate is SSIM > 0.99. The count
+   above 0.98 -- not the Hamming count -- drives any decision.
+2. **Timestamps.** Filenames carry capture times (692 of 695 parse; the three
+   UUID names are counted, never guessed). A re-capture is seconds apart, a
+   second survey is hours or days. Reported against a null: the same statistic
+   for random same-class pairs.
+3. **Within-class vs between-class.** A duplicate carries its original's label,
+   so real duplication is overwhelmingly within-class. Spread at the base rate
+   means the hash is detecting shape.
+4. **Threshold sensitivity.** The verdict re-reported at 0, 1, 2 and 5.
+
+Plus `artifacts/near_duplicate_contact_sheet.png`, the ten largest clusters as
+thumbnails labelled with class and timestamp. If a 37-image cluster is visibly
+37 different cards, one glance settles it.
+
+**Do not spend 165 GPU re-runs on Hamming distance.** That is how a measurement
+of class morphology becomes a refrozen corpus.
+
 ## 4.12 Fairness checks, and why they are not arms
 
 Three runs answer "was YOLO26 handicapped?", and none of them belongs in the

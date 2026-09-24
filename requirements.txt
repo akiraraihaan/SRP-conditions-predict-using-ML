@@ -35,6 +35,9 @@ scikit-posthocs==0.13.0
 # 09 REFUSES to run without it rather than improvising a hash, because an
 # unvalidated one would produce a clean verdict nobody could trust.
 imagehash==4.3.2
+# SSIM for the pixel-level confirmation. The audit REFUSES to hand-roll it:
+# that check is what decides whether 165 GPU re-runs happen.
+scikit-image==0.26.0
 statsmodels==0.14.6
 
 # NOTE on torch: OLD_DIR pinned the CPU build. On Kaggle the CUDA build of the
