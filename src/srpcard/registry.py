@@ -500,6 +500,7 @@ def build_record(
     efficiency: dict[str, Any],
     wall_time_s: float,
     run_id_extra: Any,
+    optimizer_used: str,
     run_id_optimizer: str | None = None,
     determinism_status: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
@@ -526,6 +527,18 @@ def build_record(
       `extra` dict this record stores. Required, with no default, because a
       record that cannot reproduce its own run_id is not reproducible in any
       sense that matters. See docs/RUN_ID.md.
+    - `optimizer_used` -- what ACTUALLY stepped the weights, read back from the
+      built optimizer object. Required, with no default.
+
+    WHY optimizer_used HAS NO DEFAULT. Every record written before it existed
+    carries `optimizer: None`, so the registry could not say what trained any
+    run. configs/arms.yaml declared `optimizer: MuSGD` for the three YOLO arms,
+    and that was taken at face value for weeks -- including in an analysis built
+    on the belief that the optimizer was confounded with the architecture
+    family. It was not: ultralytics' MuSGD takes `use_muon: bool = False`, and
+    built from a flat parameter list it runs its pure-SGD path and is bitwise
+    identical to torch.optim.SGD. A record that cannot say what trained it
+    cannot contradict a wrong assumption, and this one did not.
 
     THE IDENTITY GAP THIS CLOSES. `extra` is one of RUN_ID_FIELDS, but every
     script hashes a short string marker ("uniform_grid", "lc_frac0.20", or None)
@@ -558,6 +571,9 @@ def build_record(
         "class_weights": class_weights,
         "run_seed": run_seed,
         "val_seed": val_seed,
+        # What stepped the weights, not what was asked for. `extra` carries the
+        # request and the declaration beside it, so a disagreement is visible.
+        "optimizer": optimizer_used,
         # --- what was actually loaded and proved, not what was requested ---
         "checkpoint_resolved": checkpoint_resolved,
         "pretrained_fallback_used": bool(pretrained_fallback_used),

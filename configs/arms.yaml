@@ -24,7 +24,22 @@ arms:
     architecture: yolo26n-cls
     backend: ultralytics
     pretrained_fallback: yolo11n-cls.pt
-    optimizer: MuSGD
+  # optimizer: SGD, NOT MuSGD. This said MuSGD for weeks and it was a lie the
+  # code never told -- ultralytics' MuSGD takes `use_muon: bool = False`, and
+  # src/srpcard/train.py builds it from a flat parameter list without passing
+  # it, so no Muon update is ever applied and the object is bitwise identical
+  # to torch.optim.SGD (197/197 and 210/210 tensors identical after five steps
+  # on yolo26n and mobilenetv3_small).
+  #
+  # Every record in the registry was therefore trained with SGD. The value is
+  # corrected here rather than the code changed: turning Muon on now would make
+  # every future run incomparable with all past ones to fix something that was
+  # never broken, only mislabelled. The campaign is SGD throughout.
+  #
+  # This string misled two readers into believing the optimizer was confounded
+  # with the architecture family. A config that names something the code does
+  # not do is a trap; do not reintroduce one.
+    optimizer: SGD          # was MuSGD; see the note above
     epochs: 25
     batch: 16
     lr: 0.001
@@ -55,7 +70,7 @@ arms:
     architecture: yolo26n-cls
     backend: ultralytics
     pretrained_fallback: yolo11n-cls.pt
-    optimizer: MuSGD
+    optimizer: SGD          # was MuSGD; see the note above
     epochs: 50
     batch: 16
     lr: 0.001
@@ -66,7 +81,7 @@ arms:
     architecture: yolo26s-cls
     backend: ultralytics
     pretrained_fallback: yolo11s-cls.pt
-    optimizer: MuSGD
+    optimizer: SGD          # was MuSGD; see the note above
     epochs: 50
     batch: 8
     lr: 0.01
@@ -77,7 +92,7 @@ arms:
     architecture: yolo26m-cls
     backend: ultralytics
     pretrained_fallback: yolo11m-cls.pt
-    optimizer: MuSGD
+    optimizer: SGD          # was MuSGD; see the note above
     epochs: 50
     batch: 8
     lr: 0.001

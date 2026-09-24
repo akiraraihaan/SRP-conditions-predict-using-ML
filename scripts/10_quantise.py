@@ -225,6 +225,27 @@ def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
 
 # --------------------------------------------------------------------------
 
+ENVIRONMENT_NOTE = """
+  THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.
+
+  Every macro-F1 here is measured in THIS environment from the checkpoint this
+  script was given, and every quantisation delta is taken against the fp32
+  number in the same row. That is the comparison the table is for: what
+  quantisation costs, holding everything else fixed.
+
+  It is NOT a reproduction of the published figure, and must not be read as
+  one. Three arms stopped reproducing their recorded metrics on an unchanged
+  T4 under the same torch 2.12.0+cu130 -- yolo26s 1.04e-2, mobilenetv3_small
+  1.67e-2, resnet18 6.8e-3. Not run-to-run noise: two fresh runs agreed with
+  each other exactly and both differed from the record. Reinstalling torch
+  from the cu130 index had moved cuDNN and cuBLAS underneath, and torch_cuda
+  alone does not show that. Every new record now carries the cuDNN version and
+  the nvidia-* distribution versions so the next such gap is one line to read.
+
+  The registry figure is printed beside the measured one for context. A delta
+  between them is an ENVIRONMENT difference, not a quantisation effect.
+"""
+
 HEADER = [
     "Post-training quantisation: SIZE AND ACCURACY. NO LATENCY.",
     "",
@@ -244,6 +265,19 @@ HEADER = [
     "",
     "The fold is configs/arms.yaml:reporting.benchmark_fold -- fixed and",
     "pre-declared, not the best-scoring fold.",
+    "",
+    "THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.",
+    "",
+    "macro_f1_fp32 is MEASURED here from the checkpoint this script was given,",
+    "and every quantisation delta is taken against it. macro_f1_fp32_recorded_",
+    "in_registry is CONTEXT ONLY -- do not compute a delta against it.",
+    "",
+    "The two can differ without either being wrong. Three arms stopped matching",
+    "their records on an unchanged T4 under the same torch 2.12.0+cu130 because",
+    "reinstalling torch from the cu130 index moved cuDNN and cuBLAS underneath;",
+    "torch_cuda alone does not identify that. A gap in",
+    "macro_f1_fp32_measured_minus_recorded is an ENVIRONMENT difference, not a",
+    "quantisation effect.",
 ]
 
 
@@ -312,6 +346,14 @@ def main() -> int:
     cache = ImageCache(index, data_root, int(arms_cfg["shared"]["image_size"]))
     cache.warm(calibration_idx + test_idx)
 
+    # The registry's own figure for the benchmark fold, for CONTEXT beside the
+    # measured one. Never a baseline: see ENVIRONMENT_NOTE.
+    recorded_f1 = {
+        r["arm"]: r.get("f1_macro")
+        for r in aggregate.cv_records()
+        if r.get("repeat") == repeat and r.get("fold") == fold
+    }
+
     rows = []
     for arm in arms:
         rule(arm)
@@ -325,7 +367,15 @@ def main() -> int:
 
         scratch = artifacts / ("_q_%s.pt" % arm)
         fp32_size = state_dict_size_mb(module, scratch)
+        # MEASURED HERE, from the checkpoint that was handed to this script. The
+        # registry's value is shown beside it for context and is NEVER used as
+        # the baseline: see the note below.
         fp32_metrics = macro_f1(module, cache, test_idx, labels_by_idx, data_cfg)
+        recorded = recorded_f1.get(arm)
+        drift = (
+            round(fp32_metrics["f1_macro"] - recorded, 6)
+            if recorded is not None else None
+        )
 
         row = {
             "arm": arm,
@@ -338,9 +388,18 @@ def main() -> int:
             "latency_measured": False,
             "latency_note": "NOT MEASURED HERE -- size and accuracy only",
             "size_mb_fp32": fp32_size,
+            # The baseline every delta in this row is taken against.
             "macro_f1_fp32": round(fp32_metrics["f1_macro"], 6),
+            # Context only. Do NOT compute a quantisation delta against this.
+            "macro_f1_fp32_recorded_in_registry": recorded,
+            "macro_f1_fp32_measured_minus_recorded": drift,
+            "baseline_is": "measured from this checkpoint, in this environment",
         }
-        print("  fp32          %8.3f MB   macro-F1 %.4f" % (fp32_size, fp32_metrics["f1_macro"]))
+        print("  fp32          %8.3f MB   macro-F1 %.4f  (measured here)"
+              % (fp32_size, fp32_metrics["f1_macro"]))
+        if recorded is not None:
+            print("                registry recorded %.4f for this run  ->  delta %+0.4f"
+                  % (recorded, drift))
 
         for method, function in (("dynamic", dynamic_ptq), ("static", static_ptq)):
             if method == "dynamic":
@@ -391,6 +450,15 @@ def main() -> int:
 
     frame = pd.DataFrame(rows)
     rule("SUMMARY -- size and accuracy only, NO LATENCY")
+    print(ENVIRONMENT_NOTE)
+    drifted = [(r["arm"], r["macro_f1_fp32_measured_minus_recorded"]) for r in rows
+               if r.get("macro_f1_fp32_measured_minus_recorded")]
+    if drifted:
+        print("  arms whose measured fp32 differs from the registry:")
+        for arm, delta in sorted(drifted, key=lambda t: -abs(t[1])):
+            print("      %-22s %+0.4f" % (arm, delta))
+        print()
+
     under = [r["arm"] for r in rows if r.get("under_flash_budget_static")]
     print("  arms under the %.1f MB flash budget after static PTQ: %s"
           % (FLASH_BUDGET_MB, ", ".join(under) if under else "none"))

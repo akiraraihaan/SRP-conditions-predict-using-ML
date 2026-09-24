@@ -195,6 +195,77 @@ def native_predictions(model, paths: list[Path], classes: list[str]) -> list[int
     return predicted
 
 
+# What "their recipe" concretely consisted of. Read back from the trainer that
+# ran, never quoted from documentation: ultralytics resolves `optimizer: auto`
+# and several augmentation strengths at runtime, so the defaults in the docs are
+# not necessarily the values that were in force.
+AUGMENTATION_KEYS = (
+    "hsv_h", "hsv_s", "hsv_v", "degrees", "translate", "scale", "shear",
+    "perspective", "flipud", "fliplr", "bgr", "mosaic", "mixup", "cutmix",
+    "copy_paste", "auto_augment", "erasing", "crop_fraction",
+)
+
+SCHEDULE_KEYS = (
+    "optimizer", "lr0", "lrf", "momentum", "weight_decay", "warmup_epochs",
+    "warmup_momentum", "warmup_bias_lr", "cos_lr", "epochs", "batch", "imgsz",
+    "patience", "amp", "seed", "single_cls", "dropout", "label_smoothing",
+)
+
+
+def recipe_report(trainer) -> dict:
+    """The augmentations, schedule and optimizer THAT RAN.
+
+    Anything not readable from the trainer is listed by name under
+    `unreadable_keys` rather than filled in from documentation. A default that
+    was not in force is worse than a gap: it reads as a measurement.
+    """
+    args = getattr(trainer, "args", None)
+    resolved = dict(vars(args)) if args is not None else {}
+
+    augmentation, schedule, unreadable = {}, {}, []
+    for key in AUGMENTATION_KEYS:
+        if key in resolved:
+            augmentation[key] = resolved[key]
+        else:
+            unreadable.append("augmentation.%s" % key)
+    for key in SCHEDULE_KEYS:
+        if key in resolved:
+            schedule[key] = resolved[key]
+        else:
+            unreadable.append("schedule.%s" % key)
+
+    # The optimizer OBJECT, not the request. `optimizer: auto` resolves at
+    # runtime, so the string in args is not necessarily what stepped the
+    # weights -- the same distinction that hid MuSGD == SGD in our own loop.
+    optimizer = getattr(trainer, "optimizer", None)
+    optimizer_used = type(optimizer).__name__ if optimizer is not None else None
+    if optimizer is None:
+        unreadable.append("optimizer_object")
+
+    groups = []
+    if optimizer is not None:
+        for group in optimizer.param_groups:
+            groups.append({
+                key: group.get(key)
+                for key in ("lr", "momentum", "weight_decay", "nesterov")
+                if key in group
+            })
+
+    active = {k: v for k, v in augmentation.items()
+              if v not in (0, 0.0, False, None, "")}
+    return {
+        "augmentation": augmentation,
+        "augmentation_active": active,
+        "augmentation_disabled": sorted(set(augmentation) - set(active)),
+        "schedule": schedule,
+        "optimizer_requested": resolved.get("optimizer"),
+        "optimizer_used": optimizer_used,
+        "optimizer_param_groups": groups,
+        "unreadable_keys": unreadable,
+        "read_back_from": "ultralytics trainer instance, not documentation",
+    }
+
+
 def selection_report(run_dir: Path) -> dict:
     """Which checkpoint Ultralytics kept, and on what criterion.
 
@@ -381,6 +452,7 @@ def main() -> int:
 
             run_dir = Path(model.trainer.save_dir)
             selection = selection_report(run_dir)
+            recipe = recipe_report(model.trainer)
             best = run_dir / "weights" / "best.pt"
             scored = YOLO(str(best)) if best.exists() else model
 
@@ -395,6 +467,16 @@ def main() -> int:
                   % (selection.get("selected_epoch_native"),
                      selection.get("epochs_run_native"),
                      selection.get("selection_metric_column", "fitness")))
+            print("     optimizer: requested %r -> %s ran"
+                  % (recipe["optimizer_requested"], recipe["optimizer_used"]))
+            active = recipe["augmentation_active"]
+            print("     augmentation ON  : %s"
+                  % (", ".join("%s=%s" % kv for kv in sorted(active.items())) or "none"))
+            print("     augmentation OFF : %s"
+                  % (", ".join(recipe["augmentation_disabled"]) or "none"))
+            if recipe["unreadable_keys"]:
+                print("     NOT READABLE from the trainer (not guessed at): %s"
+                      % ", ".join(recipe["unreadable_keys"]))
 
             registry.append_record(
                 registry.build_record(
@@ -432,6 +514,8 @@ def main() -> int:
                     efficiency={},
                     wall_time_s=wall,
                     run_id_extra=spec["extra"],
+                    # Theirs, not ours -- reported from the trainer below.
+                    optimizer_used="ultralytics_default (native recipe)",
                     extra={
                         "protocol": PROTOCOL,
                         "preprocessing": PREPROCESSING,
@@ -447,6 +531,9 @@ def main() -> int:
                         "not_held_common": ["preprocessing", "augmentation",
                                             "schedule", "optimizer",
                                             "checkpoint_selection"],
+                        # The recipe THAT RAN, for the manuscript to describe
+                        # without quoting documentation at it.
+                        "native_recipe": recipe,
                         **selection,
                     },
                 )

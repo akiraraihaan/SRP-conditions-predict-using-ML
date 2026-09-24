@@ -39,6 +39,7 @@ def make_record(**overrides):
         wall_time_s=1.0,
         # 03_run_cv hashes `extra` as None -- see docs/RUN_ID.md.
         run_id_extra=None,
+        optimizer_used="SGD",
         extra={"protocol": "uniform"},
     )
     record.update(overrides)

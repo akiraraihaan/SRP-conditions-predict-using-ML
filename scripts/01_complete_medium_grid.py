@@ -556,6 +556,10 @@ def main() -> int:
             wall_time_s=wall,
             # Exactly the object the hash saw -- see docs/RUN_ID.md.
             run_id_extra=spec["extra"],
+            # Trained by ultralytics model.train(), not the uniform loop, so
+            # the optimizer object is theirs and we did not build it. Named
+            # rather than guessed at.
+            optimizer_used="ultralytics_default (not built by srpcard.train)",
             determinism_status={"note": "ultralytics trainer; determinism not enforced"},
             extra={
                 "key": spec["key"],

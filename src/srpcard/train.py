@@ -210,11 +210,29 @@ class TrainResult:
     class_weights: list[float] | None = None
     determinism: dict[str, Any] = field(default_factory=dict)
     device: str = "cpu"
+    # What ACTUALLY stepped the weights, read back from the built object -- not
+    # the string someone asked for. A run whose record says "MuSGD" while an
+    # SGD update did the work is indistinguishable afterwards from one that
+    # worked, and every comparison built on it silently compares a thing with
+    # itself. `optimizer_used` is the honest one-liner; the fingerprint carries
+    # the settings that produced it.
+    optimizer_used: str = ""
+    optimizer_fingerprint: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
 # the loop
 # --------------------------------------------------------------------------
+
+
+# What each accepted optimizer name must actually construct. Checked after
+# construction, so a rename or an import fallback inside a vendored optimizer
+# cannot quietly substitute one for another.
+OPTIMIZER_CLASS_NAMES = {
+    "musgd": "MuSGD",
+    "sgd": "SGD",
+    "adamw": "AdamW",
+}
 
 
 def _build_optimizer(module, cfg: TrainConfig):
@@ -245,6 +263,56 @@ def _build_optimizer(module, cfg: TrainConfig):
     if name == "adamw":
         return torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     raise ValueError("Unknown optimizer %r" % cfg.optimizer)
+
+
+# Settings that change what an optimizer DOES, as opposed to what it is called.
+# `use_muon` is the one that matters here: ultralytics' MuSGD takes
+# `use_muon: bool = False`, so a MuSGD built from a flat parameter list runs its
+# pure-SGD path and is bitwise identical to torch.optim.SGD. Verified: 197/197
+# and 210/210 tensors identical after five steps on yolo26n and
+# mobilenetv3_small. A record that says "MuSGD" and means SGD is worse than one
+# that says nothing.
+BEHAVIOUR_SETTINGS = ("use_muon", "momentum", "nesterov", "weight_decay")
+
+
+def optimizer_fingerprint(optimizer) -> dict:
+    """What this optimizer will actually do, not what it is called."""
+    group = optimizer.param_groups[0] if optimizer.param_groups else {}
+    settings = {k: group.get(k) for k in BEHAVIOUR_SETTINGS if k in group}
+    name = type(optimizer).__name__
+    degenerate = name == "MuSGD" and not group.get("use_muon", False)
+    return {
+        "class": name,
+        "settings": settings,
+        # The honest one-line answer, and the one that goes in the record.
+        "effective": "SGD (MuSGD with use_muon=False)" if degenerate else name,
+        "degenerate_to_sgd": degenerate,
+        "n_param_groups": len(optimizer.param_groups),
+    }
+
+
+def build_optimizer_checked(module, cfg: TrainConfig):
+    """`_build_optimizer`, plus proof that it built what was asked for.
+
+    The whole point of an optimizer contrast is that the two runs differ. If the
+    requested optimizer silently does not reach the trainer, both runs train
+    identically, the records differ only in a label, and the comparison reports
+    "no difference" from a duplicate. That failure is invisible in the numbers
+    -- it looks like a null result -- so it is caught here instead.
+    """
+    optimizer = _build_optimizer(module, cfg)
+    requested = (cfg.optimizer or "SGD").lower()
+    expected = OPTIMIZER_CLASS_NAMES.get(requested)
+    actual = type(optimizer).__name__
+    if expected is not None and actual != expected:
+        raise RuntimeError(
+            "Requested optimizer %r but constructed %s.\n"
+            "  A run that trains with an optimizer it did not ask for is not a "
+            "contrast,\n  it is a duplicate wearing a different label, and the "
+            "comparison built on\n  it would report a null result that never "
+            "happened." % (cfg.optimizer, actual)
+        )
+    return optimizer, optimizer_fingerprint(optimizer)
 
 
 def _lr_factor(epoch: int, cfg: TrainConfig) -> float:
@@ -304,7 +372,9 @@ def train_fold(
     elif cfg.class_weights != "none":
         raise ValueError("class_weights must be 'balanced' or 'none', got %r" % cfg.class_weights)
 
-    optimizer = _build_optimizer(module, cfg)
+    # Checked, not bare: the requested optimizer must be the one constructed, or
+    # a "contrast" run trains identically to the arm it is contrasted against.
+    optimizer, optimizer_fp = build_optimizer_checked(module, cfg)
     base_lrs = [group["lr"] for group in optimizer.param_groups]
     scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg.amp and device == "cuda"))
 
@@ -434,6 +504,8 @@ def train_fold(
 
     module.load_state_dict(best_state)
     return TrainResult(
+        optimizer_used=optimizer_fp["effective"],
+        optimizer_fingerprint=optimizer_fp,
         best_state=best_state,
         best_epoch=best_epoch,
         best_val_f1=best_val_f1,

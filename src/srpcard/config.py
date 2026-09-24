@@ -500,6 +500,46 @@ def library_versions() -> dict[str, str]:
         versions["cuda_available"] = str(torch.cuda.is_available())
         if torch.cuda.is_available():
             versions["gpu"] = torch.cuda.get_device_name(0)
+
+        # THE CUDA LIBRARY STACK, not just the CUDA toolkit version.
+        #
+        # Three arms stopped reproducing their recorded metrics on the same T4
+        # under the same torch 2.12.0+cu130 -- yolo26s 1.04e-2,
+        # mobilenetv3_small 1.67e-2, resnet18 6.8e-3. It was not run-to-run
+        # noise: two fresh runs agreed with each other exactly and both
+        # differed from the record. Reinstalling torch from the cu130 index had
+        # moved cuDNN and cuBLAS underneath.
+        #
+        # `torch_cuda` alone cannot show that -- it was identical across the two
+        # environments. These are the fields that would have explained the
+        # mismatch in one line instead of an afternoon.
+        #
+        # EVERY NAME HERE MEANS WHAT IT SAYS. torch has no public cuBLAS version
+        # API, so the cuBLAS version is read from the installed nvidia-cublas-*
+        # distribution -- which is the thing that actually moves when torch is
+        # reinstalled from a different CUDA index. Naming something else
+        # "cublas" would repeat the mistake this project just removed from
+        # configs/arms.yaml.
+        versions["cudnn"] = str(torch.backends.cudnn.version())
+        versions["cudnn_enabled"] = str(torch.backends.cudnn.enabled)
+        versions["torch_compiled_cuda"] = str(
+            getattr(torch._C, "_cuda_getCompiledVersion", lambda: "unknown")()
+        )
+
     except Exception:  # noqa: BLE001
         pass
+
+    # The CUDA runtime libraries as PIP SEES THEM. This is the layer that moved.
+    try:
+        from importlib.metadata import distributions, version
+
+        for dist in distributions():
+            name = (dist.metadata["Name"] or "").lower()
+            if name.startswith("nvidia-") and any(
+                key in name for key in ("cublas", "cudnn", "cuda-runtime", "cusolver")
+            ):
+                versions[name] = version(name)
+    except Exception:  # noqa: BLE001
+        pass
+
     return versions

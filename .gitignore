@@ -112,6 +112,13 @@ artifacts/*
 # 11, the 2x2 that breaks the optimizer/architecture confound, plus the
 # native-recipe row. Preprocessing is NOT constant across rows; the column says so.
 !artifacts/yolo_recipe_check.csv
+# 11, the environment replication: the same configuration on a different CUDA
+# library stack. Not a planned experiment -- it exists because the "optimizer
+# contrast" turned out to be an exact re-run.
+!artifacts/environment_replication.csv
+# 11, what Ultralytics' own recipe consisted of, read back from the trainer
+!artifacts/native_recipe_settings.csv
+
 # 11, C1: yolo26n with the epoch budget raised 25 -> 50
 !artifacts/epoch_budget_check.csv
 # 11, C1: where best-weight selection landed, appendix C form

@@ -27,16 +27,17 @@ from srpcard import data as srp_data  # noqa: E402
 from srpcard import evaluate, registry  # noqa: E402
 from srpcard import folds as srp_folds  # noqa: E402
 from srpcard.config import (  # noqa: E402
-    published_arms,
     artifacts_dir,
     hardware,
     library_versions,
+    published_arms,
     load_arms_config,
     load_data_config,
     resolve_data_root,
 )
 from srpcard.efficiency import profile  # noqa: E402
 from srpcard.models import add_fallback_argument, build_model  # noqa: E402
+from srpcard.train import OPTIMIZER_CLASS_NAMES  # noqa: E402
 from srpcard.train import (  # noqa: E402
     ImageCache,
     TrainConfig,
@@ -76,7 +77,8 @@ def benchmark_fold(arms_cfg) -> tuple[int, int]:
     return int(block.get("repeat", 0)), int(block.get("fold", 0))
 
 
-def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> None:
+def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float,
+                      *, recorded: dict | None = None, metrics: dict | None = None) -> None:
     """Write the benchmark fold's weights for one arm.
 
     No comparison against what is already there: the fold is fixed, so there is
@@ -116,6 +118,27 @@ def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> N
                     "fixed benchmark fold from configs/arms.yaml:"
                     "reporting.benchmark_fold -- not chosen on test performance"
                 ),
+                # THIS CHECKPOINT'S OWN METRICS, measured in the environment
+                # that produced it, beside what the registry recorded when the
+                # run was first made. They can differ without either being
+                # wrong: reinstalling torch from a different CUDA index moves
+                # cuDNN and cuBLAS underneath, and three arms stopped matching
+                # their records for exactly that reason on an unchanged T4.
+                # Anything downstream must compare against `measured`, never
+                # against `recorded`.
+                "measured": dict(metrics or {"f1_macro": f1_macro}),
+                "recorded": dict(recorded or {}),
+                "measured_minus_recorded": (
+                    round(f1_macro - recorded["f1_macro"], 6)
+                    if recorded and recorded.get("f1_macro") is not None else None
+                ),
+                "optimizer_used": getattr(result, "optimizer_used", None),
+                "environment": library_versions(),
+                "environment_note": (
+                    "the CUDA library stack is recorded because torch_cuda alone "
+                    "does not identify it; cudnn and the nvidia-* distributions "
+                    "are what move on a reinstall"
+                ),
             },
             indent=2,
         ),
@@ -124,6 +147,69 @@ def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float) -> N
     )
     print("  [weights] %s r%df%d (f1 %.4f) -> %s"
           % (spec["arm"], spec["repeat"], spec["fold"], f1_macro, target))
+
+
+def assert_optimizer_honoured(spec: dict, cfg) -> None:
+    """An explicit --optimizer must be the one the config carries. No exceptions.
+
+    This is the check that would have caught a contrast run training with the
+    arm's declared optimizer: identical seeds and an identical optimizer give
+    identical per-fold numbers, which reads as "the optimizer makes no
+    difference" when in fact the optimizer never changed.
+    """
+    requested = spec.get("optimizer")
+    if not requested:
+        return
+    effective = (cfg.optimizer or "").lower()
+    if effective != str(requested).lower():
+        raise SystemExit(
+            "--optimizer %r did not reach the training config (it holds %r).\n"
+            "  A run that trains with an optimizer it did not ask for produces\n"
+            "  per-fold values identical to the arm it is meant to contrast, and\n"
+            "  the comparison then reports a null result that never happened.\n"
+            "  Refusing to start." % (requested, cfg.optimizer)
+        )
+
+
+def warn_if_optimizer_is_degenerate(arm: str, result) -> None:
+    """Say plainly when the optimizer that ran is not the one the name suggests.
+
+    ultralytics' MuSGD defaults to `use_muon=False`, so built from a flat
+    parameter list it IS SGD -- verified bitwise over five steps. An arm that
+    declares MuSGD and trains with SGD is not a bug in the run; it is a bug in
+    what everyone believes about the run, and nothing in the numbers shows it.
+    """
+    fingerprint = getattr(result, "optimizer_fingerprint", None) or {}
+    if not fingerprint.get("degenerate_to_sgd"):
+        return
+    print(
+        "  [WARNING] %s declares %s but %s is what ran.\n"
+        "            use_muon is False, so no Muon update was applied. This is\n"
+        "            recorded as the effective optimizer; do not describe these\n"
+        "            runs as MuSGD runs."
+        % (arm, fingerprint.get("class"), fingerprint.get("effective"))
+    )
+
+
+def assert_optimizer_used(spec: dict, result) -> None:
+    """And the optimizer CONSTRUCTED must be the one requested.
+
+    Separate from the check above because they fail differently: the config can
+    be right while the trainer builds something else -- an import fallback, a
+    vendored class that renames itself. `TrainResult.optimizer_used` is the
+    class that actually stepped the weights.
+    """
+    requested = spec.get("optimizer") or spec.get("declared_optimizer")
+    used = getattr(result, "optimizer_used", "") or ""
+    if not requested or not used:
+        return
+    expected = OPTIMIZER_CLASS_NAMES.get(str(requested).lower())
+    if expected and used != expected:
+        raise SystemExit(
+            "Requested optimizer %r but %s did the stepping.\n"
+            "  Refusing to record a run whose optimizer is not what it claims."
+            % (requested, used)
+        )
 
 
 VERIFIED_METRICS = ("f1_macro", "accuracy", "precision_macro", "recall_macro")
@@ -223,7 +309,12 @@ def emit_weights_for_completed(out_dir, specs, *, tolerance, arms_cfg, data_cfg,
             ]
             raise SystemExit("\n".join(lines))
 
-        save_fold_weights(out_dir, spec, bundle, result, metrics["f1_macro"])
+        # The reproduce path knows both numbers, so the sidecar carries both.
+        save_fold_weights(
+            out_dir, spec, bundle, result, metrics["f1_macro"],
+            recorded={m: record.get(m) for m in VERIFIED_METRICS},
+            metrics={m: metrics.get(m) for m in VERIFIED_METRICS},
+        )
         written += 1
     return written
 
@@ -540,13 +631,17 @@ def main() -> int:
             )
         )
         # The override reaches the trainer through the same key it reached the
-        # hash through, so a run whose identity says "musgd" cannot train with
-        # anything else.
+        # hash through, and is then CHECKED. The identity-neutral rule in
+        # registry.py exists to keep old hashes stable; it must never decide what
+        # the trainer runs. A contrast that silently trains the arm's declared
+        # optimizer is not a null result, it is a duplicate wearing a label, and
+        # nothing in the numbers would show it.
         cfg = TrainConfig.from_arm(
             spec["arm"], arms_cfg, epochs=spec["epochs"],
             class_weights=spec["class_weights"],
             **({"optimizer": spec["optimizer"]} if spec.get("optimizer") else {}),
         )
+        assert_optimizer_honoured(spec, cfg)
         started = time.perf_counter()
         result = train_fold(
             bundle,
@@ -559,6 +654,8 @@ def main() -> int:
             device=args.device,
             verbose=not args.quiet,
         )
+        assert_optimizer_used(spec, result)
+        warn_if_optimizer_is_degenerate(spec["arm"], result)
         metrics = evaluate.evaluate_fold(
             bundle.module, cache, entry["test_idx"], labels_by_idx, data_cfg
         )
@@ -604,6 +701,7 @@ def main() -> int:
             # Exactly the object the hash saw -- see docs/RUN_ID.md.
             run_id_extra=spec["extra"],
             run_id_optimizer=spec.get("optimizer"),
+            optimizer_used=result.optimizer_used,
             determinism_status=result.determinism,
             extra={
                 # Scopes the drift guard: records from script 01 (legacy
@@ -616,11 +714,22 @@ def main() -> int:
                 "class_weight_values": result.class_weights,
                 "device": result.device,
                 "model_notes": bundle.notes,
+                # The optimizer that ACTUALLY STEPPED THE WEIGHTS, by class
+                # name, beside the two strings that only say what was wanted.
+                # Records written before this field exists carry none of the
+                # three, so what any of those runs used cannot be recovered
+                # from the registry -- which is exactly the hole this closes.
+                "optimizer_requested": spec.get("optimizer"),
+                "optimizer_declared": arms_cfg["arms"][spec["arm"]].get("optimizer"),
+                "optimizer_fingerprint": result.optimizer_fingerprint,
             },
         )
         if args.save_weights and (spec["repeat"], spec["fold"]) == bench_fold:
+            # Written as the run happens, so there is nothing recorded to
+            # compare against yet -- this IS the record.
             save_fold_weights(
-                Path(args.save_weights), spec, bundle, result, metrics["f1_macro"]
+                Path(args.save_weights), spec, bundle, result, metrics["f1_macro"],
+                metrics={m: metrics.get(m) for m in VERIFIED_METRICS},
             )
 
         registry.append_record(record)

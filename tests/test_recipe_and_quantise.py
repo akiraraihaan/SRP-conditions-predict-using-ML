@@ -50,90 +50,17 @@ def record(arm, script, fold, f1, override=None, repeat=0):
     }
 
 
-# ------------------------------------------------------ which cell is which
-
-
-def test_an_override_run_is_not_mistaken_for_the_published_arm(recipe):
-    """yolo26n/MuSGD and yolo26n/SGD differ only by the override, so a cell
-    that ignored it would silently average the two together."""
-    records = [
-        record("yolo26n", recipe.PUBLISHED, 0, 0.50),
-        record("yolo26n", recipe.CONTRAST, 0, 0.40, override="sgd"),
-    ]
-    published = next(c for c in recipe.CELLS if c["cell"] == "yolo26n / MuSGD")
-    contrast = next(c for c in recipe.CELLS if c["cell"] == "yolo26n / SGD")
-
-    assert len(recipe.cell_records(records, published, 0)) == 1
-    assert recipe.cell_records(records, published, 0)[0]["f1_macro"] == 0.50
-    assert recipe.cell_records(records, contrast, 0)[0]["f1_macro"] == 0.40
-
-
-def test_the_override_is_read_case_insensitively(recipe):
-    records = [record("yolo26n", recipe.CONTRAST, 0, 0.4, override="SGD")]
-    contrast = next(c for c in recipe.CELLS if c["cell"] == "yolo26n / SGD")
-    assert len(recipe.cell_records(records, contrast, 0)) == 1
-
-
-def test_another_repeat_is_not_pulled_into_the_2x2(recipe):
-    records = [
-        record("yolo26n", recipe.PUBLISHED, 0, 0.50, repeat=0),
-        record("yolo26n", recipe.PUBLISHED, 0, 0.90, repeat=1),
-    ]
-    published = next(c for c in recipe.CELLS if c["cell"] == "yolo26n / MuSGD")
-    assert [r["f1_macro"] for r in recipe.cell_records(records, published, 0)] == [0.50]
-
-
-def test_the_2x2_has_four_cells_plus_the_native_row(recipe):
-    assert len(recipe.CELLS) == 5
-    uniform = [c for c in recipe.CELLS if c["preprocessing"] == recipe.LETTERBOX]
-    native = [c for c in recipe.CELLS if c["preprocessing"] == recipe.ULTRALYTICS]
-    assert len(uniform) == 4 and len(native) == 1
-    assert {(c["arm"], c["optimizer"]) for c in uniform} == {
-        ("yolo26n", "musgd"), ("yolo26n", "sgd"),
-        ("mobilenetv3_small", "sgd"), ("mobilenetv3_small", "musgd"),
-    }
-
-
-# ----------------------------------------------------------- the verdict
-
-
-def build(recipe, **means):
-    rows = []
-    for cell in recipe.CELLS:
-        rows.append({"cell": cell["cell"],
-                     "f1_macro_mean": means.get(cell["cell"]),
-                     "preprocessing": cell["preprocessing"]})
-    return pd.DataFrame(rows)
-
-
-def test_a_missing_musgd_mobilenet_cell_refuses_to_conclude(recipe):
-    """Running YOLO with SGD alone does not break the confound, and the script
-    must say so rather than imply the question was answered."""
-    frame = build(recipe, **{"yolo26n / MuSGD": 0.52, "yolo26n / SGD": 0.48,
-                             "mobilenetv3_small / SGD": 0.58})
-    lines = "\n".join(recipe.confound_verdict(frame))
-    assert "CANNOT CONCLUDE YET" in lines
-    assert "MISSING" in lines
-    assert "does not separate architecture from optimizer" in lines
-
-
-def test_the_finding_survives_when_mobilenet_still_wins_at_equal_optimizer(recipe):
-    frame = build(recipe, **{"yolo26n / MuSGD": 0.52, "yolo26n / SGD": 0.48,
-                             "mobilenetv3_small / SGD": 0.58,
-                             "mobilenetv3_small / MuSGD": 0.57})
-    lines = "\n".join(recipe.confound_verdict(frame))
-    assert "SURVIVES THE CONFOUND" in lines
-    assert "tracks the ARCHITECTURE" in lines
-
-
-def test_the_finding_is_called_out_when_it_does_not_survive(recipe):
-    """The case that must reach the manuscript before submission, not after."""
-    frame = build(recipe, **{"yolo26n / MuSGD": 0.60, "yolo26n / SGD": 0.48,
-                             "mobilenetv3_small / SGD": 0.58,
-                             "mobilenetv3_small / MuSGD": 0.55})
-    lines = "\n".join(recipe.confound_verdict(frame))
-    assert "DOES NOT SURVIVE" in lines
-    assert "BEFORE SUBMISSION" in lines
+# ------------------------------------------------------ the 2x2 is gone
+#
+# The tests that lived here exercised a 2x2 crossing architecture against
+# optimizer -- cell_records, _override_of, confound_verdict. That design was
+# built on configs/arms.yaml declaring MuSGD for the YOLO arms, and MuSGD was
+# SGD: ultralytics' MuSGD takes use_muon=False and was constructed from a flat
+# parameter list, so the "optimizer" axis crossed one thing with itself.
+#
+# They are deleted rather than adapted. A test for a design that no longer
+# exists passes for the wrong reason and keeps the wrong shape alive in the
+# reader's head. What replaces them is at the end of this file.
 
 
 # ------------------------------------------------- the native path's guards
@@ -328,3 +255,217 @@ def test_the_published_scripts_use_the_published_set():
             "%s falls back to every arm in the config, so a contrast arm would "
             "join the comparison by default" % name
         )
+
+
+# ============================================================ the optimizer lie
+
+
+def test_no_arm_declares_musgd_any_more():
+    """arms.yaml said MuSGD on three arms and the code never applied Muon.
+    ultralytics' MuSGD takes use_muon=False by default and train.py builds it
+    from a flat parameter list, so it is bitwise SGD. The config now says what
+    runs; a config that names something the code does not do is a trap."""
+    from srpcard.config import load_arms_config
+
+    for name, arm in load_arms_config()["arms"].items():
+        assert arm.get("optimizer") != "MuSGD", (
+            "%s declares MuSGD, which this project never actually applies" % name
+        )
+
+
+def test_the_reason_is_recorded_in_the_config():
+    text = (REPO_ROOT / "configs" / "arms.yaml").read_text(encoding="utf-8")
+    assert "use_muon" in text
+    assert "bitwise identical" in text or "bitwise" in text
+
+
+def test_musgd_and_sgd_are_the_same_object_in_practice():
+    """The measurement behind the claim, so it is checked rather than asserted.
+    If ultralytics ever changes the default, this fails and the config note
+    becomes wrong -- which is exactly when someone needs to know."""
+    torch = pytest.importorskip("torch")
+    from ultralytics.optim.muon import MuSGD
+
+    model = torch.nn.Sequential(torch.nn.Conv2d(3, 8, 3), torch.nn.Flatten(),
+                                torch.nn.LazyLinear(2))
+    model(torch.rand(1, 3, 16, 16))          # materialise the lazy layer
+    opt = MuSGD(list(model.parameters()), lr=0.01, momentum=0.9,
+                weight_decay=1e-4, nesterov=True)
+    assert opt.param_groups[0].get("use_muon") is False, (
+        "MuSGD now enables Muon by default; configs/arms.yaml and HANDOVER "
+        "describe the old behaviour and must be revisited"
+    )
+
+
+def test_the_effective_optimizer_is_read_back_from_the_object():
+    """Not from the config. The config was wrong for weeks and nothing caught
+    it, because no record could say what actually trained it."""
+    torch = pytest.importorskip("torch")
+    from srpcard.train import TrainConfig, build_optimizer_checked
+
+    model = torch.nn.Linear(4, 2)
+    cfg = TrainConfig(epochs=1, batch=2, lr=0.01, optimizer="musgd")
+    _, fingerprint = build_optimizer_checked(model, cfg)
+
+    assert fingerprint["class"] == "MuSGD"
+    assert fingerprint["degenerate_to_sgd"] is True
+    assert fingerprint["effective"] == "SGD (MuSGD with use_muon=False)"
+
+
+def test_a_plain_sgd_is_not_flagged_as_degenerate():
+    torch = pytest.importorskip("torch")
+    from srpcard.train import TrainConfig, build_optimizer_checked
+
+    cfg = TrainConfig(epochs=1, batch=2, lr=0.01, optimizer="SGD")
+    _, fingerprint = build_optimizer_checked(torch.nn.Linear(4, 2), cfg)
+    assert fingerprint["effective"] == "SGD"
+    assert fingerprint["degenerate_to_sgd"] is False
+
+
+def test_the_record_cannot_be_written_without_the_effective_optimizer():
+    import inspect
+
+    from srpcard import registry
+
+    parameter = inspect.signature(registry.build_record).parameters["optimizer_used"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+# ======================================================= the CUDA library stack
+
+
+def test_the_cuda_stack_is_recorded_under_honest_names():
+    """torch has no public cuBLAS version API, so the cuBLAS version comes from
+    the installed nvidia-cublas-* distribution. Calling something else 'cublas'
+    would repeat the mistake just removed from arms.yaml."""
+    from srpcard.config import library_versions
+
+    versions = library_versions()
+    assert "cudnn" in versions
+    assert "cudnn_enabled" in versions
+    # whatever is reported must not be mislabelled
+    assert "cublas" not in versions or versions["cublas"].startswith(
+        tuple("0123456789")
+    )
+
+    source = (REPO_ROOT / "src" / "srpcard" / "config.py").read_text(encoding="utf-8")
+    assert "nvidia-" in source
+    assert "EVERY NAME HERE MEANS WHAT IT SAYS" in source
+
+
+def test_quantisation_does_not_baseline_against_the_registry():
+    """Three arms stopped reproducing their records after a torch reinstall
+    moved cuDNN. The accuracy column is internally consistent; comparing it
+    against the registry would report an environment change as a quantisation
+    effect."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert "INTERNALLY CONSISTENT, NOT A REPRODUCTION" in source
+    assert "macro_f1_fp32_recorded_in_registry" in source
+    assert "CONTEXT ONLY" in source or "Context only" in source
+    assert "ENVIRONMENT difference, not a" in source
+
+
+# ======================================================= 11, rebuilt
+
+
+def test_there_is_no_optimizer_axis_any_more(recipe):
+    """The 2x2 is gone. MuSGD was SGD, so crossing architecture against
+    optimizer crossed one thing with itself."""
+    assert not hasattr(recipe, "CELLS"), "the 2x2 must not come back"
+    assert len(recipe.ROWS) == 3
+    assert {r["optimizer"] for r in recipe.ROWS} == {"SGD", "theirs"}
+
+
+def test_table_1_states_both_halves_or_neither(recipe):
+    import pandas as pd
+
+    full = pd.DataFrame([
+        {"row": "yolo26n / uniform", "f1_macro_mean": 0.5233},
+        {"row": "mobilenetv3_small / uniform", "f1_macro_mean": 0.5812},
+        {"row": "yolo26n / native recipe", "f1_macro_mean": 0.5787},
+    ])
+    lines = " ".join(recipe.recipe_conclusion(full))
+    assert "+0.0579" in lines, "the architecture gap under a common recipe"
+    assert "+0.0554" in lines, "what the native recipe recovers"
+    assert "STATE BOTH" in lines
+
+
+def test_a_missing_row_refuses_to_conclude(recipe):
+    import pandas as pd
+
+    partial = pd.DataFrame([
+        {"row": "yolo26n / uniform", "f1_macro_mean": 0.5233},
+        {"row": "mobilenetv3_small / uniform", "f1_macro_mean": 0.5812},
+        {"row": "yolo26n / native recipe", "f1_macro_mean": None},
+    ])
+    lines = " ".join(recipe.recipe_conclusion(partial))
+    assert "INCOMPLETE" in lines
+    assert "yolo26n / native recipe" in lines
+
+
+def test_the_environment_finding_is_computed_not_written(recipe):
+    """Hardcoding 0.147 would make the paragraph a claim rather than a result."""
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"kind": "summary", "arm": "mobilenetv3_small", "n_folds": 5,
+         "delta": -0.0109, "max_abs_delta": 0.1470, "reproduces_exactly": False},
+        {"kind": "summary", "arm": "yolo26n", "n_folds": 5,
+         "delta": 0.0, "max_abs_delta": 0.0, "reproduces_exactly": True},
+    ])
+    lines = " ".join(recipe.environment_finding(frame))
+
+    assert "0.147" in lines and "0.011" in lines
+    assert "mobilenetv3_small" in lines and "yolo26n" in lines
+    assert "ARCHITECTURE-DEPENDENT" in lines
+    assert "1 of the 2" in lines
+
+
+def test_causality_is_stated_as_plausible_not_proven(recipe):
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"kind": "summary", "arm": "a", "n_folds": 5, "delta": 0.01,
+         "max_abs_delta": 0.1, "reproduces_exactly": False},
+    ])
+    lines = " ".join(recipe.environment_finding(frame))
+    assert "CUDA library stack" in lines
+    assert "PLAUSIBLE mechanism, not a proven one" in lines
+    assert "cuDNN caused" not in lines
+
+
+def test_the_emit_deltas_are_marked_as_reported_when_no_sidecar(recipe):
+    frame = recipe.environment_replication([], 0, None)
+    support = frame[frame["kind"] == "emit_weights_reproduction"]
+    assert len(support) == 3
+    assert all("REPORTED" in s for s in support["source"])
+
+
+def test_a_sidecar_is_preferred_over_the_reported_value(recipe, tmp_path):
+    import json
+
+    (tmp_path / "resnet18.json").write_text(json.dumps({
+        "measured": {"f1_macro": 0.60}, "recorded": {"f1_macro": 0.6068},
+        "measured_minus_recorded": -0.0068,
+    }), encoding="utf-8")
+
+    frame = recipe.environment_replication([], 0, tmp_path)
+    row = frame[(frame["kind"] == "emit_weights_reproduction")
+                & (frame["arm"] == "resnet18")].iloc[0]
+    assert "sidecar" in row["source"]
+    assert row["delta"] == -0.0068
+
+
+def test_the_native_recipe_is_read_back_not_quoted():
+    source = (REPO_ROOT / "scripts" / "03c_native_recipe.py").read_text(encoding="utf-8")
+    assert "read_back_from" in source
+    assert "unreadable_keys" in source
+    assert "not documentation" in source
+    # the optimizer OBJECT, not the requested string
+    assert 'getattr(trainer, "optimizer", None)' in source
+
+
+def test_the_epoch_budget_table_survived_the_rebuild(recipe):
+    assert hasattr(recipe, "epoch_budget"), (
+        "C1's table is orthogonal to the optimizer collapse and is still owed"
+    )

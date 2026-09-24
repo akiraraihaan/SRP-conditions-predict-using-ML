@@ -207,6 +207,7 @@ def main() -> int:
                     wall_time_s=wall,
                     # Exactly the object the hash saw -- docs/RUN_ID.md.
                     run_id_extra=spec["extra"],
+                    optimizer_used=result.optimizer_used,
                     determinism_status=result.determinism,
                     extra={
                         "protocol": "uniform",

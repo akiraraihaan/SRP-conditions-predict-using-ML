@@ -231,7 +231,7 @@ def test_the_record_carries_the_hashed_marker(registry_path):
         val_seed=2, checkpoint_resolved="x", pretrained_fallback_used=False,
         class_weights_verified=True, class_weights_proof={}, corpus_fingerprint={},
         training={}, metrics={}, efficiency={}, wall_time_s=1.0,
-        run_id_extra="lc_frac0.20",
+        run_id_extra="lc_frac0.20", optimizer_used="SGD",
         extra={"protocol": "uniform", "fraction": 0.2},
     )
     assert record["extra"]["run_id_extra"] == "lc_frac0.20"
@@ -247,7 +247,7 @@ def test_an_override_is_recorded_beside_the_marker(registry_path):
         pretrained_fallback_used=False, class_weights_verified=True,
         class_weights_proof={}, corpus_fingerprint={}, training={}, metrics={},
         efficiency={}, wall_time_s=1.0,
-        run_id_extra=None, run_id_optimizer="SGD",
+        run_id_extra=None, run_id_optimizer="SGD", optimizer_used="SGD",
         extra={"protocol": "uniform"},
     )
     assert record["extra"]["run_id_extra"] is None
@@ -269,6 +269,7 @@ def test_a_record_written_now_can_verify_itself(registry_path):
         class_weights_proof={}, corpus_fingerprint={}, training={}, metrics={},
         efficiency={}, wall_time_s=1.0,
         run_id_extra=spec["extra"], run_id_optimizer=spec["optimizer"],
+        optimizer_used="MuSGD",
         extra={"protocol": "uniform"},
         **{k: v for k, v in spec.items() if k not in ("extra", "optimizer")},
     )
