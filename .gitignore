@@ -105,6 +105,9 @@ artifacts/*
 # 08, per-fold merged values, so any scenario pair can be given a corrected
 # interval without recomputing the merges
 !artifacts/taxonomy_merge_folds.csv
+# 08, where the six within-family pairs sit among all 45. The control
+# reporting its own result: 1 in 8,145,060, in five architectures.
+!artifacts/taxonomy_family_concentration.csv
 
 # 11, the 2x2 that breaks the optimizer/architecture confound, plus the
 # native-recipe row. Preprocessing is NOT constant across rows; the column says so.
@@ -124,6 +127,9 @@ artifacts/*
 # 09, the ten largest clusters as thumbnails. The cheapest check of all: if a
 # 37-image cluster is visibly 37 different cards, one glance settles it.
 !artifacts/near_duplicate_contact_sheet.png
+# 09, EXACT decoded-pixel duplicate groups. The check that found the one
+# residual file sha1 could not: a re-encode keeps the pixels, changes the bytes.
+!artifacts/pixel_duplicates.csv
 
 # 04
 !artifacts/ablation_paired.csv

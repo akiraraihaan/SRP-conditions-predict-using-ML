@@ -457,10 +457,22 @@ def figure_taxonomy_pairs(pairs, arm: str, out_dir: Path) -> list[Path]:
         for a, b in zip(block["class_a"], block["class_b"])
     ]
     hypothesised = [bool(h) for h in block["hypothesised"].fillna("")]
+    # Three colours, not two. The two HYPOTHESISED pairs (M1, M2) were proposed
+    # in advance; the other four within-family pairs were not, and their arrival
+    # at the top of the ranking alongside them is the actual result -- those
+    # four classes are one error family rather than two separate pairs. Merging
+    # the two categories into one colour would hide exactly that.
+    if "within_family" in block.columns:
+        family = [bool(f) for f in block["within_family"].fillna(False)]
+    else:
+        family = list(hypothesised)
 
     fig, ax = plt.subplots(figsize=(7.2, 9.0))
     positions = np.arange(len(values))
-    colours = ["tab:orange" if h else "tab:blue" for h in hypothesised]
+    colours = [
+        "tab:orange" if h else ("tab:red" if f else "tab:blue")
+        for h, f in zip(hypothesised, family)
+    ]
     ax.barh(positions, values, color=colours, height=0.78)
 
     # gain = merged - baseline, and the baseline is the same for every row, so
@@ -478,14 +490,21 @@ def figure_taxonomy_pairs(pairs, arm: str, out_dir: Path) -> list[Path]:
     ax.set_ylim(-0.7, len(values) - 0.3)
     ax.set_xlim(left=min(baseline, values.min()) - 0.004)
     ax.set_xlabel("macro-F1 after merging the pair (mean over 15 folds)")
-    ax.set_title("Every possible single-pair merge, %s" % arm.replace("_", " "))
+    ax.set_title(
+        "Every possible single-pair merge, %s\n"
+        "the four-class error family occupies the top of the ranking"
+        % arm.replace("_", " ")
+    )
 
     from matplotlib.patches import Patch
 
+    n_family = sum(family)
     ax.legend(
         handles=[
-            Patch(facecolor="tab:orange", label="hypothesised merge"),
-            Patch(facecolor="tab:blue", label="the other 43"),
+            Patch(facecolor="tab:orange", label="hypothesised in advance (M1, M2)"),
+            Patch(facecolor="tab:red",
+                  label="other within-family pairs (%d)" % max(n_family - 2, 0)),
+            Patch(facecolor="tab:blue", label="the remaining %d" % (len(values) - n_family)),
         ] + ax.get_legend_handles_labels()[0],
         fontsize=7, loc="lower right",
     )

@@ -663,6 +663,69 @@ group ever appear and straddle a boundary, the protocol switches to
 
 ---
 
+
+### 12.7 Three hashes, three different questions
+
+The exclusion rule in 12.3 groups by **file sha1**. That answers one question,
+and it is worth writing down which:
+
+| hash | detects | blind to |
+| --- | --- | --- |
+| **file sha1** (bytes on disk) | duplicate **FILES** | a re-encode -- same image, different bytes |
+| **perceptual hash** (phash, DCT over an 8x8 reduction) | shape *family* | nothing here; on line art it is too coarse to mean identity |
+| **decoded-pixel sha1** (sha1 of the RGB buffer after `Image.open().convert("RGB")`, before any letterbox or resize) | duplicate **IMAGES** | genuinely different captures of the same card |
+
+**Byte-level sha1 detects duplicate files, not duplicate images.** Saving a PNG
+a second time -- a different tool, a different compression level, a round-trip
+through an editor -- changes every byte while leaving the decoded pixels
+identical. If that copy was filed under a second class directory, the corpus
+now holds one card with two labels and the sha1 rule cannot see it.
+
+**A perceptual hash on line art over a uniform background detects shape family,
+not identity.** A dynamometer card is a thin curve on white, so almost all of
+the low-frequency energy a DCT-based hash measures is shared across the entire
+corpus whatever the class. Run at a Hamming threshold of 5/64 -- a sensible
+number for photographs -- it flagged 116 pairs on this corpus, with exactly ONE
+at distance 0, two thirds of the resulting clusters carrying more than one
+label, and its largest cluster spanning precisely the classes this work
+independently finds morphologically confusable. Median SSIM over those pairs
+was 0.716 and the timestamp null ratio 0.97: it was measuring class shape.
+See HANDOVER.md 4.11b.
+
+**A decoded-pixel hash is what detects duplicate images.** It is exact -- zero
+false positives by construction -- and robust to re-encoding, which is the one
+thing file sha1 is not.
+
+### 12.8 The residual it found
+
+`scripts/09_duplicate_audit.py` hashes decoded pixels over all **695** indexed
+images (not the clean 668, so a group the sha1 rule already excluded is
+distinguishable from one nothing has caught) and writes
+`artifacts/pixel_duplicates.csv`.
+
+Result: **14 groups of pixel-identical images. 13 are exactly the 13 conflict
+groups of 12.2** -- independent corroboration that the original rule found
+everything file hashing could find. **One is new:**
+
+| | |
+| --- | --- |
+| `natural_flowing/6c1219e7-eb27-4eaa-9e3d-954f95a70d4f.png` | idx 297 |
+| `vibration/Screenshot 2026-04-19 115549.png` | idx 655 |
+
+SSIM 1.0000, two different file sha1s, **conflicting labels**, straddles 3 of
+the 15 folds, does not straddle the dev split. It is the same defect as the 13
+conflict groups -- one card, two labels -- reached through a re-encode.
+
+**The direction matters.** Because the labels differ, a straddling group
+teaches one label and tests the other, so it guarantees an error at test time.
+It **depresses** the reported macro-F1 rather than inflating it, bounded at
+about **0.002** on the mean. It is documented as a residual rather than
+excluded, because excluding it would move the corpus fingerprint and invalidate
+all 234 registry records to correct a bias that runs in the conservative
+direction.
+
+**It is alone.** One group of two images, in 695.
+
 ## 13. Cross-references against the old results
 
 Computed by `scripts/00_build_folds.py` phase 2b (`src/srpcard/legacy_audit.py`),

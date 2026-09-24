@@ -353,3 +353,200 @@ def test_the_taxonomy_frames_all_carry_an_arm_column(recompute, frame_name):
         "pairs": recompute.all_pair_merges(records),
     }
     assert "arm" in frames[frame_name].columns
+
+
+# ============================================================================
+# M5 and the rank-concentration control.
+#
+# M1 and M2 were proposed as two separate confusable pairs. All six pairs
+# drawn from {vibration, severe_vibration, pump_leakage, natural_flowing}
+# occupy ranks 1-6 of 45 for mobilenetv3_small, resnet18 and yolo26m, and
+# 1,2,4,5,6,7 for yolo26n and yolo26s. Those four classes are ONE error
+# family, and that is a stronger result than the hypothesis.
+# ============================================================================
+
+
+def test_the_family_is_the_four_classes(recompute):
+    assert set(recompute.ERROR_FAMILY) == {
+        "vibration", "severe_vibration", "pump_leakage", "natural_flowing",
+    }
+
+
+def test_m5_merges_the_family_into_one_class(recompute):
+    groups = recompute.scenario_groups(CLASSES)
+    assert groups["M5"] == [recompute.ERROR_FAMILY]
+
+    matrix = np.eye(10) * 5
+    merged, names = recompute.merge_confusion(matrix, CLASSES, groups["M5"])
+    assert merged.shape == (7, 7), "10 classes minus 4 plus 1 is 7"
+    assert names[0] == "+".join(sorted(recompute.ERROR_FAMILY))
+
+
+def test_m5_is_a_plausible_taxonomy_unlike_m4(recompute):
+    """M4 fuses unrelated physics and is an upper bound. M5 fuses one severity
+    continuum with the collapsed-card pair, which is a different claim."""
+    rng = np.random.default_rng(77)
+    records = [{
+        "arm": "a", "repeat": 0, "fold": f, "class_order": CLASSES,
+        "confusion_matrix": rng.integers(0, 9, size=(10, 10)).tolist(),
+        "f1_macro": 0.5, "extra": {"protocol": "uniform"},
+    } for f in range(5)]
+
+    summary = recompute.taxonomy_summary(
+        recompute.per_fold_merged_f1(records), rho=0.25
+    )
+    m5 = summary[summary["scenario"] == "M5"].iloc[0]
+    m4 = summary[summary["scenario"] == "M4"].iloc[0]
+
+    assert m5["plausible_taxonomy"]
+    assert not m4["plausible_taxonomy"]
+    assert m5["n_classes"] == 7
+
+
+def test_the_m5_note_says_observation_not_recommendation(recompute):
+    note = recompute.SCENARIO_NOTES["M5"]
+    assert "OBSERVATION ABOUT ERROR STRUCTURE" in note
+    assert "not a recommendation" in note
+
+
+# ------------------------------------------------------- the exact statistic
+
+
+def test_six_of_45_in_the_top_six_is_one_in_8_145_060(recompute):
+    """Your figure, recomputed rather than quoted."""
+    from math import comb
+
+    assert comb(45, 6) == 8145060
+
+    result = recompute.rank_concentration([1, 2, 3, 4, 5, 6], n_items=45)
+
+    assert result["rank_sum"] == 21 == result["rank_sum_min_possible"]
+    assert result["occupies_top_k"] is True
+    assert result["p_top_k"] == pytest.approx(1 / 8145060)
+    assert result["p_rank_sum"] == pytest.approx(1 / 8145060)
+
+
+def test_the_graded_version_covers_a_block_that_is_not_flush(recompute):
+    """yolo26n and yolo26s sit at 1,2,4,5,6,7. p_top_k is undefined there and
+    the rank sum is what should be quoted."""
+    result = recompute.rank_concentration([1, 2, 4, 5, 6, 7], n_items=45)
+
+    assert result["rank_sum"] == 25
+    assert result["occupies_top_k"] is False
+    assert result["p_top_k"] is None
+    assert result["p_rank_sum"] == pytest.approx(1.473e-06, rel=1e-3)
+
+
+def test_the_distribution_is_exact_and_complete(recompute):
+    """Counted, not sampled: the claim lives far out in the tail, which is
+    where a normal approximation is least trustworthy."""
+    from math import comb
+
+    distribution = recompute.rank_sum_distribution(45, 6)
+    assert sum(distribution.values()) == comb(45, 6)
+    assert min(distribution) == 21          # 1+2+3+4+5+6
+    assert max(distribution) == 255         # 40+41+42+43+44+45
+
+
+def test_a_small_case_can_be_checked_by_hand(recompute):
+    """C(5,2) = 10 subsets. Four sum to 5 or less: {1,2}=3, {1,3}=4, {1,4}=5
+    and {2,3}=5. Enumerated here so the DP is checked against something that
+    does not share its implementation."""
+    from itertools import combinations
+
+    by_hand = sum(1 for pair in combinations(range(1, 6), 2) if sum(pair) <= 5)
+    assert by_hand == 4
+
+    result = recompute.rank_concentration([1, 4], n_items=5)
+    assert result["rank_sum"] == 5
+    assert result["p_rank_sum"] == pytest.approx(by_hand / 10)
+
+
+def test_an_unremarkable_position_is_not_significant(recompute):
+    """The control has to be able to say no, or it is not a control."""
+    result = recompute.rank_concentration([20, 21, 22, 23, 24, 25], n_items=45)
+    assert result["p_rank_sum"] > 0.05
+
+
+# ----------------------------------------------------- the per-arm table
+
+
+def test_the_concentration_table_covers_every_arm(recompute):
+    rng = np.random.default_rng(101)
+    records = []
+    for arm in ("a", "b"):
+        for f in range(3):
+            records.append({
+                "arm": arm, "repeat": 0, "fold": f, "class_order": CLASSES,
+                "confusion_matrix": rng.integers(0, 9, size=(10, 10)).tolist(),
+                "f1_macro": 0.5, "extra": {"protocol": "uniform"},
+            })
+
+    pairs = recompute.all_pair_merges(records)
+    concentration = recompute.family_rank_concentration(pairs)
+
+    assert sorted(concentration["arm"]) == ["a", "b"]
+    assert set(concentration["n_family_pairs"]) == {6}
+    assert set(concentration["n_pairs_total"]) == {45}
+
+
+def test_exactly_six_of_the_45_pairs_are_within_family(recompute):
+    rng = np.random.default_rng(103)
+    records = [{
+        "arm": "a", "repeat": 0, "fold": f, "class_order": CLASSES,
+        "confusion_matrix": rng.integers(0, 9, size=(10, 10)).tolist(),
+        "f1_macro": 0.5, "extra": {"protocol": "uniform"},
+    } for f in range(3)]
+
+    pairs = recompute.all_pair_merges(records)
+
+    assert pairs["within_family"].sum() == 6
+    family = set(recompute.ERROR_FAMILY)
+    for row in pairs[pairs["within_family"]].itertuples():
+        assert {row.class_a, row.class_b} <= family
+    # the two hypothesised pairs are a SUBSET of the family, not the whole of it
+    assert pairs[pairs["hypothesised"] != ""]["within_family"].all()
+
+
+# ------------------------------------------------------------- the figure
+
+
+def test_the_figure_distinguishes_family_from_hypothesised():
+    """Merging the two categories into one colour would hide the actual result:
+    four pairs nobody proposed in advance arriving at the top alongside the two
+    that were."""
+    source = (REPO_ROOT / "src" / "srpcard" / "figures.py").read_text(encoding="utf-8")
+    assert "within_family" in source
+    assert "tab:red" in source and "tab:orange" in source
+    assert "hypothesised in advance" in source
+
+
+def test_the_preselection_caveat_travels_with_the_number(recompute):
+    """Only M1 and M2 were pre-specified. The other four within-family pairs
+    were discovered in the same ranking that scores them, so p_top_k applied to
+    the family is circular -- selection and test share the numbers. The number
+    must not stand anywhere without that sentence beside it."""
+    header = " ".join(recompute.CONCENTRATION_HEADER)
+
+    assert "Only TWO of the six pairs were pre-specified" in header
+    assert "circular" in header
+    assert "DESCRIPTIVE, PLUS" in header or "descriptive" in header.lower()
+    assert "must not be multiplied" in header
+
+    source = (REPO_ROOT / "scripts" / "08_recompute_from_registry.py").read_text(
+        encoding="utf-8"
+    )
+    assert "CAVEAT. Only M1 and M2 were PRE-SPECIFIED." in source, (
+        "the printed summary shows p_top_k, so it must carry the caveat too"
+    )
+
+
+def test_the_caveat_is_in_the_handover_too():
+    doc = (REPO_ROOT / "HANDOVER.md").read_text(encoding="utf-8")
+    section = doc[doc.index("## 4.14"):]
+    assert "Only M1 and M2 were pre-specified" in section
+    assert "circular" in section
+    assert "must not be multiplied" in section
+    assert "not as \"p < 1e-6" in section, (
+        "the caveat should say what to write instead, not only what is wrong"
+    )

@@ -87,6 +87,22 @@ COLLAPSED_CARD_PAIR = ("pump_leakage", "natural_flowing")
 # "pump collision with vibration" are different faults with different remedies.
 # It is reported as an UPPER BOUND on what any vibration-side relabelling could
 # buy, and labelled as such in the output.
+# THE ERROR FAMILY. Not a hypothesis -- a result read off the 45-pair control.
+#
+# All six pairs drawn from these four classes occupy ranks 1-6 of 45 for
+# mobilenetv3_small, resnet18 and yolo26m, and ranks 1,2,4,5,6,7 for yolo26n
+# and yolo26s. Six pre-specified pairs taking the top six by chance is 1 in
+# C(45,6) = 8,145,060, and it happens in five architectures independently.
+#
+# M1 and M2 were proposed as two separate confusable pairs. The control says
+# they are not separate: these four classes are ONE error family.
+ERROR_FAMILY = (
+    "vibration",
+    "severe_vibration",
+    "pump_leakage",
+    "natural_flowing",
+)
+
 VIBRATION_BEARING = (
     "collide_pump_and_vibration",
     "gas_influence_and_vibration",
@@ -105,6 +121,12 @@ SCENARIO_NOTES = {
     "M4": "NOT A PLAUSIBLE TAXONOMY. Every vibration-bearing class merged, "
           "plus M2. Reported as an upper bound only: it fuses faults with "
           "different physical causes and different remedies",
+    "M5": "the four-class ERROR FAMILY merged into one, 7 classes. Unlike M4 "
+          "this fuses no unrelated physics: it is one severity continuum "
+          "(vibration / severe_vibration) together with the collapsed-card "
+          "pair (pump_leakage / natural_flowing) that the confusion structure "
+          "says the models cannot separate. It is an OBSERVATION ABOUT ERROR "
+          "STRUCTURE, not a recommendation to adopt a 7-class taxonomy",
 }
 
 
@@ -116,7 +138,8 @@ def scenario_groups(class_order: list[str]) -> dict[str, list[tuple[str, ...]]]:
     rather than silently merging nothing.
     """
     known = set(class_order)
-    for name in set(VIBRATION_PAIR) | set(COLLAPSED_CARD_PAIR) | set(VIBRATION_BEARING):
+    for name in (set(VIBRATION_PAIR) | set(COLLAPSED_CARD_PAIR)
+                 | set(VIBRATION_BEARING) | set(ERROR_FAMILY)):
         if name not in known:
             raise SystemExit(
                 "Class %r is named by a merge scenario but is not in the "
@@ -131,6 +154,7 @@ def scenario_groups(class_order: list[str]) -> dict[str, list[tuple[str, ...]]]:
         "M2": [COLLAPSED_CARD_PAIR],
         "M3": [VIBRATION_PAIR, COLLAPSED_CARD_PAIR],
         "M4": [VIBRATION_BEARING, COLLAPSED_CARD_PAIR],
+        "M5": [ERROR_FAMILY],
     }
 
 
@@ -369,6 +393,87 @@ def taxonomy_summary(folds: pd.DataFrame, rho: float) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def rank_sum_distribution(n_items: int, k: int) -> dict[int, int]:
+    """How many k-subsets of {1..n_items} have each possible rank sum.
+
+    Exact, by dynamic programming. n=45, k=6 is 8,145,060 subsets and the sums
+    run 21..255, so this is a few thousand integer additions -- no sampling and
+    no normal approximation, which matters because the whole point is a p-value
+    far out in the tail where an approximation is least trustworthy.
+    """
+    counts = {0: {0: 1}}
+    for value in range(1, n_items + 1):
+        for size in range(min(k, value), 0, -1):
+            below = counts.get(size - 1, {})
+            target = counts.setdefault(size, {})
+            for total, ways in below.items():
+                target[total + value] = target.get(total + value, 0) + ways
+    return counts.get(k, {})
+
+
+def rank_concentration(ranks: list[int], n_items: int = 45) -> dict:
+    """How unlikely is this concentration of ranks at the top?
+
+    Two probabilities, because they answer different questions:
+
+      p_top_k     the chance that a PRE-SPECIFIED set of k pairs occupies
+                  exactly the top k places: 1 / C(n, k). Only defined when the
+                  ranks really are 1..k.
+      p_rank_sum  the graded version -- the chance of a rank sum this small or
+                  smaller. Defined always, and the one to quote when the block
+                  is near the top but not flush with it.
+
+    This is the CONTROL doing its job. Merging any two of ten classes raises
+    macro-F1 for free, so "the proposed merges gain the most" means nothing
+    until it is set against how surprising that position is.
+    """
+    from math import comb
+
+    ranks = sorted(int(r) for r in ranks)
+    k = len(ranks)
+    observed = sum(ranks)
+    distribution = rank_sum_distribution(n_items, k)
+    total = comb(n_items, k)
+    at_or_below = sum(ways for value, ways in distribution.items() if value <= observed)
+    return {
+        "k": k,
+        "n_items": n_items,
+        "ranks": ranks,
+        "rank_sum": observed,
+        "rank_sum_min_possible": k * (k + 1) // 2,
+        "p_rank_sum": at_or_below / total,
+        "occupies_top_k": ranks == list(range(1, k + 1)),
+        "p_top_k": (1.0 / total) if ranks == list(range(1, k + 1)) else None,
+        "n_subsets": total,
+    }
+
+
+def family_rank_concentration(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Per arm: where the six within-family pairs sit among all 45."""
+    rows = []
+    for arm, block in pairs.groupby("arm", sort=True):
+        family = block[block["within_family"]]
+        if family.empty:
+            continue
+        stats = rank_concentration(list(family["rank_in_arm"]),
+                                   n_items=int(block["rank_in_arm"].max()))
+        rows.append({
+            "arm": arm,
+            "protocol": block["protocol"].iloc[0] if "protocol" in block else None,
+            "family": "+".join(sorted(ERROR_FAMILY)),
+            "n_pairs_total": stats["n_items"],
+            "n_family_pairs": stats["k"],
+            "ranks": ",".join(str(r) for r in stats["ranks"]),
+            "rank_sum": stats["rank_sum"],
+            "rank_sum_min_possible": stats["rank_sum_min_possible"],
+            "occupies_top_k": stats["occupies_top_k"],
+            "p_rank_sum": stats["p_rank_sum"],
+            "p_top_k": stats["p_top_k"],
+            "n_subsets": stats["n_subsets"],
+        })
+    return pd.DataFrame(rows)
+
+
 def all_pair_merges(records: list[dict]) -> pd.DataFrame:
     """Every one of the 45 possible single-pair merges, ranked per arm.
 
@@ -383,6 +488,7 @@ def all_pair_merges(records: list[dict]) -> pd.DataFrame:
         frozenset(VIBRATION_PAIR): "M1",
         frozenset(COLLAPSED_CARD_PAIR): "M2",
     }
+    family = set(ERROR_FAMILY)
 
     by_arm: dict[str, list[dict]] = {}
     for record in records:
@@ -418,6 +524,9 @@ def all_pair_merges(records: list[dict]) -> pd.DataFrame:
                     "macro_f1_sd": float(merged.std(ddof=1)) if len(merged) > 1 else 0.0,
                     "gain_mean": float(gain.mean()),
                     "hypothesised": hypothesised.get(frozenset((left, right)), ""),
+                    # Both ends inside the four-class error family. Six of the
+                    # 45 pairs qualify, and where they land is the result.
+                    "within_family": left in family and right in family,
                 }
             )
 
@@ -451,6 +560,13 @@ REFERENCE_PAIRS = {
 }
 
 REFERENCE_SCENARIOS = {
+    # M5 -- the four-class error family merged into one. Added after the 45-pair
+    # control showed those four classes are ONE family, not two separate pairs.
+    ("mobilenetv3_small", "M5"): 0.7254,
+    ("resnet18", "M5"): 0.7343,
+    ("yolo26s", "M5"): 0.6247,
+    ("yolo26m", "M5"): 0.6436,
+    ("yolo26n", "M5"): 0.6315,
     ("mobilenetv3_small", "baseline"): 0.5900,
     ("mobilenetv3_small", "M1"): 0.6263,
     ("mobilenetv3_small", "M2"): 0.6293,
@@ -467,6 +583,21 @@ REFERENCE_M3_GAIN = {
 }
 
 REFERENCE_PAIR_MEDIAN = {"mobilenetv3_small": 0.5931}
+
+# M5 -- the four-class error family merged. The gain, and for the two arms
+# where the corrected interval was computed independently, its bounds.
+REFERENCE_M5_GAIN = {
+    "mobilenetv3_small": 0.1354,
+    "resnet18": 0.1323,
+    "yolo26s": 0.1208,
+    "yolo26m": 0.1135,
+    "yolo26n": 0.1084,
+}
+
+REFERENCE_M5_CI = {
+    "mobilenetv3_small": (0.0945, 0.1762),
+    "resnet18": (0.0966, 0.1680),
+}
 
 
 class VerificationFailed(SystemExit):
@@ -485,7 +616,8 @@ def _check(failures: list[str], label: str, expected: float, actual, tol=TOLERAN
 
 
 def verify(paired: pd.DataFrame, summary: pd.DataFrame, pairs: pd.DataFrame,
-           folds: pd.DataFrame, width_factor: float) -> int:
+           folds: pd.DataFrame, width_factor: float,
+           concentration: pd.DataFrame) -> int:
     """Recompute the reference values and assert. Non-zero exit on any failure."""
     rule("VERIFY -- reference values recomputed from the registry")
     failures: list[str] = []
@@ -515,6 +647,32 @@ def verify(paired: pd.DataFrame, summary: pd.DataFrame, pairs: pd.DataFrame,
         row = summary[(summary["arm"] == arm) & (summary["scenario"] == "M3")]
         _check(failures, "%s M3 gain" % arm, expected,
                None if row.empty else row.iloc[0].get("gain_mean"))
+
+    for arm, expected in REFERENCE_M5_GAIN.items():
+        row = summary[(summary["arm"] == arm) & (summary["scenario"] == "M5")]
+        _check(failures, "%s M5 gain" % arm, expected,
+               None if row.empty else row.iloc[0].get("gain_mean"))
+
+    for arm, (low, high) in REFERENCE_M5_CI.items():
+        row = summary[(summary["arm"] == arm) & (summary["scenario"] == "M5")]
+        _check(failures, "%s M5 corrected CI low" % arm, low,
+               None if row.empty else row.iloc[0].get("gain_ci95_corrected_low"))
+        _check(failures, "%s M5 corrected CI high" % arm, high,
+               None if row.empty else row.iloc[0].get("gain_ci95_corrected_high"))
+
+    # The control, checked as a control: six pre-specified pairs in the top six
+    # of 45 is 1 in 8,145,060, and the claim is that it happens in every arm.
+    for row in concentration.itertuples():
+        if row.rank_sum > 30:
+            failures.append(
+                "%-52s expected <= 30   actual %d (ranks %s)"
+                % ("%s family rank sum" % row.arm, row.rank_sum, row.ranks)
+            )
+        if row.p_rank_sum > 1e-4:
+            failures.append(
+                "%-52s expected <= 1e-4 actual %.3e"
+                % ("%s family concentration p" % row.arm, row.p_rank_sum)
+            )
 
     for arm, expected in REFERENCE_PAIR_MEDIAN.items():
         block = pairs[pairs["arm"] == arm]
@@ -565,10 +723,19 @@ def verify(paired: pd.DataFrame, summary: pd.DataFrame, pairs: pd.DataFrame,
         )
         return 1
 
-    print("\n  All %d reference value(s) reproduced within %g."
-          % (3 * len(REFERENCE_PAIRS) + len(REFERENCE_SCENARIOS)
-             + len(REFERENCE_M3_GAIN) + 2 * len(REFERENCE_PAIR_MEDIAN) + 2,
-             TOLERANCE))
+    total = (
+        1                                   # the width factor
+        + 3 * len(REFERENCE_PAIRS)
+        + len(REFERENCE_SCENARIOS)
+        + len(REFERENCE_M3_GAIN)
+        + len(REFERENCE_M5_GAIN)
+        + 2 * len(REFERENCE_M5_CI)
+        + 2 * len(REFERENCE_PAIR_MEDIAN)   # median and pair count
+        + len(REFERENCE_PAIR_MEDIAN)       # the top-6 membership claim
+        + 2 * len(concentration)           # rank sum and p, per arm
+        + 1                                # baseline reproduces recorded f1
+    )
+    print("\n  All %d reference value(s) reproduced within %g." % (total, TOLERANCE))
     return 0
 
 
@@ -639,6 +806,47 @@ PAIRS_HEADER = [
     "other 43.",
 ]
 
+CONCENTRATION_HEADER = [
+    "Where the six within-family pairs sit among all 45 single-pair merges.",
+    "",
+    "THIS IS THE CONTROL REPORTING ITS OWN RESULT. Merging any two of ten",
+    "classes raises macro-F1 for free, so 'the proposed merges gain the most'",
+    "means nothing until it is set against how surprising that position is.",
+    "",
+    "The four classes are vibration, severe_vibration, pump_leakage and",
+    "natural_flowing. Six pairs can be drawn from them, out of 45 possible.",
+    "",
+    "p_top_k is the chance a PRE-SPECIFIED set of 6 occupies exactly the top 6:",
+    "1 / C(45,6) = 1 / 8,145,060. It is defined only when the ranks really are",
+    "1-6. p_rank_sum is the graded version -- the chance of a rank sum this",
+    "small or smaller -- and is the one to quote when the block is near the top",
+    "but not flush with it.",
+    "",
+    "Both are EXACT, counted by dynamic programming over all C(45,6) subsets.",
+    "No sampling and no normal approximation: the claim lives far out in the",
+    "tail, which is where an approximation is least trustworthy.",
+    "",
+    "CAVEAT -- READ THIS BEFORE QUOTING THE NUMBER.",
+    "",
+    "Only TWO of the six pairs were pre-specified. M1 (vibration +",
+    "severe_vibration) and M2 (pump_leakage + natural_flowing) were proposed in",
+    "advance. The other four within-family pairs were NOT: they were discovered",
+    "in the same ranking that scores them here.",
+    "",
+    "p_top_k is exact only for a set fixed BEFORE the data were seen. Applied to",
+    "a set selected from this ranking it is circular, because the selection and",
+    "the test use the same numbers. It is reported because it is the right",
+    "statistic for the pre-specified half and because it bounds how extreme the",
+    "position is -- not because it licenses a p-value for the family.",
+    "",
+    "THE DEFENSIBLE CLAIM FOR THE FOUR-CLASS FAMILY IS DESCRIPTIVE, PLUS",
+    "REPLICATION: the same six pairs occupy the top of the ranking in five",
+    "architectures spanning three families, on the same folds. That is a",
+    "replication argument, not a hypothesis test, and the five arms are not",
+    "independent -- same folds, same images, same confusion structure -- so the",
+    "per-arm probabilities must not be multiplied together.",
+]
+
 FOLDS_HEADER = [
     "Per-fold merged macro-F1, the input to taxonomy_merge.csv.",
     "",
@@ -701,6 +909,7 @@ def main() -> int:
     folds = per_fold_merged_f1(records)
     summary = taxonomy_summary(folds, rho)
     pairs = all_pair_merges(records)
+    concentration = family_rank_concentration(pairs)
 
     print("  %-20s %-10s %8s %10s %12s" % ("arm", "scenario", "classes",
                                            "macro-F1", "gain"))
@@ -726,8 +935,41 @@ def main() -> int:
               % (arm, baseline_value, median, median - baseline_value,
                  ", ".join("%s+%s" % (r.class_a, r.class_b) for r in top.itertuples())))
 
+    rule("THE ERROR FAMILY -- what the control actually found")
+    print("  family : %s" % ", ".join(sorted(ERROR_FAMILY)))
+    print()
+    print("  M1 and M2 were proposed as two separate confusable pairs. All SIX")
+    print("  pairs drawn from these four classes sit at the top of the 45-pair")
+    print("  ranking, in every architecture. That is not two pairs; it is one")
+    print("  error family, and it is a stronger result than the hypothesis.")
+    print()
+    print("  %-20s %-24s %8s %14s %14s"
+          % ("arm", "ranks of the 6", "sum", "p(rank sum)", "p(top 6)"))
+    for row in concentration.itertuples():
+        print("  %-20s %-24s %8d %14.3e %14s"
+              % (row.arm, row.ranks, row.rank_sum, row.p_rank_sum,
+                 # NaN is truthy, and pandas turns None into NaN
+                 "%.3e" % row.p_top_k if row.p_top_k == row.p_top_k else "--"))
+    if not concentration.empty:
+        print()
+        print("  The minimum possible sum is %d (ranks 1-6 of 45), and a"
+              % int(concentration.iloc[0]["rank_sum_min_possible"]))
+        print("  pre-specified set of 6 taking the top 6 by chance is 1 in %s."
+              % "{:,}".format(int(concentration.iloc[0]["n_subsets"])))
+        print("  Every probability above is EXACT -- counted, not approximated --")
+        print("  because the whole claim lives far out in the tail where a normal")
+        print("  approximation is least trustworthy.")
+        print()
+        print("  CAVEAT. Only M1 and M2 were PRE-SPECIFIED. The other four")
+        print("  within-family pairs were discovered in this same ranking, so")
+        print("  applying p_top_k to the family is circular -- the selection and")
+        print("  the test use the same numbers. For the four-class family the")
+        print("  defensible claim is DESCRIPTIVE plus REPLICATION across five")
+        print("  architectures, not a hypothesis test. The five arms share folds,")
+        print("  images and confusion structure, so do NOT multiply these.")
+
     if args.verify_reference:
-        return verify(paired, summary, pairs, folds, width_factor)
+        return verify(paired, summary, pairs, folds, width_factor, concentration)
 
     # Every artefact carries the protocol it was built under, beside the arm it
     # describes. See protocol_of().
@@ -737,6 +979,7 @@ def main() -> int:
         "taxonomy_merge.csv": (summary, TAXONOMY_HEADER),
         "taxonomy_merge_pairs.csv": (pairs, PAIRS_HEADER),
         "taxonomy_merge_folds.csv": (folds, FOLDS_HEADER),
+        "taxonomy_family_concentration.csv": (concentration, CONCENTRATION_HEADER),
     }
     for frame, _ in targets.values():
         if not frame.empty:

@@ -132,6 +132,7 @@ happens instead — but you do get a stop, and the fix costs a step. Commit the 
 
 - **(b)** 695 images, 10 classes after normalisation, all per-class counts assert clean.
 - **conflict groups** 13 sha1 groups spanning >1 class → 27 files excluded → **668**, imbalance 4.16:1.
+- **one residual**, found by a decoded-pixel hash and NOT by file sha1: idx 297 / idx 655 are the same card under `natural_flowing` and `vibration`, two different sha1s because of a re-encode. Straddles 3 folds, depresses macro-F1 by at most ~0.002, documented rather than excluded. See MIGRATION_NOTES.md 12.7-12.8.
 - **(c)** dev split recovered by **Route A** (695/695 by filename, 0 by sha1), reproduces 556/69/70 exactly. Route B matches the counts but disagrees on 225 images — the count assert alone could not have caught that.
 - **cross-refs** 1 contaminated image in the legacy test set (+0.0141 on F1 if removed); 0 of the 6 "similarity" errors are contaminated, so that paragraph survives; the within-nano Friedman significance came from **val**, not test, so that paragraph does not.
 - **(d)** 15 folds, corpus-fingerprinted, every image in exactly 3 test partitions, no sha1 across any fold boundary, `gas_influence` 6–7 test images per fold.
@@ -887,6 +888,79 @@ One trap worth knowing: `torch 2.12.0+cpu` reports
 `supported_engines == ["onednn"]`, so a backend list of just fbgemm/qnnpack
 reports "static PTQ unavailable" on a machine that supports it perfectly well.
 The script takes any engine the build offers.
+
+## 4.14 The error family: what the control found, not what was proposed
+
+M1 (`vibration` + `severe_vibration`) and M2 (`pump_leakage` +
+`natural_flowing`) were proposed in advance as two separate confusable pairs.
+The 45-pair control says they are not separate.
+
+Six pairs can be drawn from those four classes, out of 45 possible single-pair
+merges. Their ranks:
+
+| arm | ranks of the six | rank sum | p(rank sum) | p(top 6) |
+| --- | --- | --- | --- | --- |
+| mobilenetv3_small | 1,2,3,4,5,6 | 21 | 1.228e-07 | 1.228e-07 |
+| resnet18 | 1,2,3,4,5,6 | 21 | 1.228e-07 | 1.228e-07 |
+| yolo26m | 1,2,3,4,5,6 | 21 | 1.228e-07 | 1.228e-07 |
+| yolo26n | 1,2,4,5,6,7 | 25 | 1.473e-06 | -- |
+| yolo26s | 1,2,4,5,6,7 | 25 | 1.473e-06 | -- |
+
+21 is the minimum possible sum. A pre-specified set of six taking the top six
+by chance is 1 in C(45,6) = **8,145,060**, and it happens in three
+architectures outright and near-outright in the other two.
+
+Both probabilities are **exact**, counted by dynamic programming over all
+C(45,6) subsets rather than approximated -- the claim lives far out in the tail,
+which is where a normal approximation is least trustworthy. `p_top_k` is defined
+only when the ranks really are 1-6; `p_rank_sum` is the graded version and is
+what to quote for yolo26n and yolo26s.
+
+### The caveat that has to travel with that number
+
+**Only M1 and M2 were pre-specified.** The other four within-family pairs were
+not proposed in advance -- they were discovered in the same 45-pair ranking that
+scores them here.
+
+`p_top_k` is exact only for a set fixed **before** the data were seen. Applied
+to a set selected from this ranking it is circular: the selection and the test
+use the same numbers. It is reported because it is the right statistic for the
+pre-specified half, and because it bounds how extreme the position is -- not
+because it licenses a p-value for the family.
+
+**For the four-class family the defensible claim is descriptive plus
+replication:** the same six pairs occupy the top of the ranking in five
+architectures spanning three families. That is a replication argument, not a
+hypothesis test. And because the five arms share folds, images and confusion
+structure, the per-arm probabilities must not be multiplied.
+
+Write it as "the six within-family pairs rank 1-6 of 45 in three architectures
+and 1,2,4,5,6,7 in the other two", not as "p < 1e-6 that this is chance".
+
+**These four classes are one error family.** M5 merges them into a single class
+(7 classes) and is labelled a plausible taxonomy alongside M3, because unlike
+M4 it fuses no unrelated physics: one severity continuum together with the
+collapsed-card pair the confusion structure says the models cannot separate.
+
+| arm | M5 macro-F1 | gain over baseline | corrected 95% CI |
+| --- | --- | --- | --- |
+| resnet18 | 0.7343 | +0.1323 | [+0.0966, +0.1680] |
+| mobilenetv3_small | 0.7254 | +0.1354 | [+0.0945, +0.1762] |
+| yolo26m | 0.6436 | +0.1135 | |
+| yolo26n | 0.6315 | +0.1084 | |
+| yolo26s | 0.6247 | +0.1208 | |
+
+**M5 is an observation about error structure, not a recommendation to adopt a
+7-class taxonomy.** It says where the models' errors concentrate; whether the
+operational taxonomy should change is a question for the domain, not for a
+confusion matrix.
+
+Artefacts: `taxonomy_merge.csv` (scenarios), `taxonomy_merge_pairs.csv` (all 45
+ranked), `taxonomy_family_concentration.csv` (the statistic above), and
+`fig_taxonomy_pairs_<arm>` which colours the two hypothesised pairs separately
+from the other four family pairs -- merging them into one colour would hide the
+result, which is that four pairs nobody proposed arrived at the top alongside
+the two that were.
 
 ## 5. Things to look at before writing the methods section
 

@@ -69,9 +69,10 @@ which is quieter and just as real.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import sys
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -252,6 +253,89 @@ def connected_components(pairs: list[tuple[int, int]]) -> list[list[int]]:
     for node in parent:
         groups[find(node)].append(node)
     return [sorted(members) for members in sorted(groups.values(), key=min)]
+
+
+# --------------------------------------------------------------------------
+# 0. DECODED-PIXEL HASH -- the check that was actually missing
+# --------------------------------------------------------------------------
+#
+# File-level sha1 detects duplicate FILES. It does not detect duplicate IMAGES:
+# re-encoding a PNG changes every byte while leaving the decoded pixels
+# identical, so the same card saved twice slips through with two different
+# sha1s and, if it was filed under two class directories, two different labels.
+#
+# A perceptual hash does not find these either -- not reliably, and on this
+# corpus not usefully: a dynamometer card is a thin curve on uniform white, so
+# phash largely measures shape family and floods the result with same-shape,
+# different-card pairs.
+#
+# Hashing the DECODED RGB buffer is the right tool, and it is exact:
+#   * zero false positives by construction -- identical bytes after decoding
+#     means the images ARE the same image
+#   * robust to re-encoding, which is precisely what file sha1 is not
+#
+# It runs over all 695 INDEXED images, not the clean 668, because a group whose
+# members were already excluded is exactly the case worth distinguishing from a
+# group nothing has caught.
+
+
+def decoded_pixel_sha1(path: Path) -> str:
+    """sha1 of the raw RGB buffer, before any letterbox or resize.
+
+    Mode and size are folded in so two images that happen to serialise to the
+    same byte length at different dimensions cannot collide.
+    """
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        image = handle.convert("RGB")
+        digest = hashlib.sha1()  # noqa: S324 - content identity, not security
+        digest.update(("%dx%d RGB" % image.size).encode("ascii"))
+        digest.update(image.tobytes())
+    return digest.hexdigest()
+
+
+def pixel_duplicate_groups(index, data_root: Path, *, quiet: bool = False) -> dict:
+    """{pixel_sha1: [idx, ...]} for every group of 2 or more, over ALL indexed images."""
+    groups: dict[str, list[int]] = defaultdict(list)
+    total = len(index)
+    for position, (_, row) in enumerate(index.iterrows(), 1):
+        path = data_root / row["relpath"]
+        if not path.exists():
+            continue
+        groups[decoded_pixel_sha1(path)].append(int(row["idx"]))
+        if not quiet and position % 200 == 0:
+            print("  decoded %d/%d" % (position, total))
+    return {digest: sorted(members)
+            for digest, members in groups.items() if len(members) > 1}
+
+
+def describe_pixel_group(members: list[int], by_idx, folds, dev) -> dict:
+    """Labels, consistency, fold straddle, and whether file sha1 already had it.
+
+    ALREADY-CAUGHT means every member shares one file-level sha1, so the
+    existing conflict-group rule saw the group. NEW means the group spans more
+    than one file sha1 -- a re-encode -- which is the case file hashing cannot
+    reach by construction.
+    """
+    labels = sorted({by_idx[i]["class"] for i in members})
+    file_sha1s = sorted({str(by_idx[i]["sha1"]) for i in members})
+    excluded = [i for i in members if bool(by_idx[i]["excluded"])]
+    straddle = straddle_report(members, folds)
+    block = {
+        "n_images": len(members),
+        "idx": members,
+        "labels": labels,
+        "label_consistent": len(labels) == 1,
+        "n_file_sha1s": len(file_sha1s),
+        "already_caught_by_file_sha1": len(file_sha1s) == 1,
+        "n_excluded_members": len(excluded),
+        "all_members_excluded": len(excluded) == len(members),
+        **straddle,
+    }
+    if dev:
+        block.update(dev_split_straddle(members, dev))
+    return block
 
 
 # --------------------------------------------------------------------------
@@ -633,9 +717,11 @@ def main() -> int:
 
     if args.dry_run:
         pairs = len(included) * (len(included) - 1) // 2
-        print("\n  --dry-run: would hash %d images with %d hash functions and\n"
-              "  compare %d pairs. Nothing written."
-              % (len(included), len(HASHES), pairs))
+        print("\n  --dry-run, nothing written:")
+        print("    decoded-pixel sha1 (EXACT) over all %d indexed images" % len(index))
+        print("    %d perceptual hash(es) over the %d included images"
+              % (len(HASHES), len(included)))
+        print("    %d pair(s) compared, then SSIM on whatever the hash flags" % pairs)
         return 0
 
     data_root = Path(args.data_root) if args.data_root else resolve_data_root(data_cfg)
@@ -647,6 +733,7 @@ def main() -> int:
         )
     print("  data root : %s" % data_root)
 
+    by_idx = {int(row["idx"]): row for _, row in index.iterrows()}
     images = resolve_images(index, data_root)
     rule("hashing %d images" % len(images))
     hashes = compute_hashes(images, quiet=args.quiet)
@@ -678,7 +765,6 @@ def main() -> int:
 
     # ---- clusters ----
     clusters = connected_components(sorted(primary))
-    by_idx = {int(row["idx"]): row for _, row in index.iterrows()}
 
     rows = []
     summary_clusters = []
@@ -711,6 +797,70 @@ def main() -> int:
                 "dev_straddles": block.get("dev_straddles"),
                 "corpus_fingerprint": corpus.get("sha1_of_sorted_included_sha1s"),
             })
+
+    # ---- 0. DECODED-PIXEL HASH, over all 695 indexed images ----
+    #
+    # Exact, and the right tool for the job phash was wrong for. File sha1
+    # detects duplicate FILES; this detects duplicate IMAGES, which is what a
+    # re-encode hides. Run over the FULL index, not the clean 668, so a group
+    # the existing rule already excluded is distinguishable from one nothing
+    # has caught.
+    rule("decoded-pixel hash (exact) -- all %d indexed images" % len(index))
+    pixel_groups = pixel_duplicate_groups(index, data_root, quiet=args.quiet)
+    pixel_blocks = []
+    for number, (digest, members) in enumerate(sorted(pixel_groups.items()), 1):
+        block = describe_pixel_group(members, by_idx, folds, dev)
+        block["group"] = number
+        block["pixel_sha1"] = digest[:16]
+        pixel_blocks.append(block)
+
+    already = [b for b in pixel_blocks if b["already_caught_by_file_sha1"]]
+    novel = [b for b in pixel_blocks if not b["already_caught_by_file_sha1"]]
+    novel_conflicting = [b for b in novel if not b["label_consistent"]]
+    novel_straddling = [b for b in novel_conflicting if b["n_folds_straddled"] > 0]
+
+    print("  groups of pixel-identical images : %d" % len(pixel_blocks))
+    print("  already caught by file sha1      : %d" % len(already))
+    print("  NEW (re-encodes, >1 file sha1)   : %d" % len(novel))
+    print("  of those, CONFLICTING labels     : %d" % len(novel_conflicting))
+    print("  of those, straddling a fold      : %d" % len(novel_straddling))
+    if novel:
+        print()
+        print("  %-7s %6s %6s %8s %8s  %s"
+              % ("group", "n", "sha1s", "folds", "dev", "labels"))
+        for block in novel:
+            print("  %-7d %6d %6d %8d %8s  %s"
+                  % (block["group"], block["n_images"], block["n_file_sha1s"],
+                     block["n_folds_straddled"],
+                     "yes" if block.get("dev_straddles") else "no",
+                     ", ".join(block["labels"])))
+            for member in block["idx"]:
+                print("            idx %-5d %-22s %s"
+                      % (member, by_idx[member]["class"], by_idx[member]["relpath"]))
+
+    pixel_rows_out = []
+    for block in pixel_blocks:
+        for member in block["idx"]:
+            pixel_rows_out.append({
+                "group": block["group"],
+                "pixel_sha1": block["pixel_sha1"],
+                "idx": member,
+                "relpath": by_idx[member]["relpath"],
+                "class": by_idx[member]["class"],
+                "file_sha1": by_idx[member]["sha1"],
+                "excluded": bool(by_idx[member]["excluded"]),
+                "group_size": block["n_images"],
+                "label_consistent": block["label_consistent"],
+                "n_file_sha1s": block["n_file_sha1s"],
+                "already_caught_by_file_sha1": block["already_caught_by_file_sha1"],
+                "n_folds_straddled": block["n_folds_straddled"],
+                "dev_straddles": block.get("dev_straddles"),
+                "corpus_fingerprint": corpus.get("sha1_of_sorted_included_sha1s"),
+            })
+    pd.DataFrame(pixel_rows_out).to_csv(
+        artifacts / "pixel_duplicates.csv", index=False, lineterminator="\n"
+    )
+    print("\n[artifacts] wrote pixel_duplicates.csv (%d row(s))" % len(pixel_rows_out))
 
     # ---- the three independent checks, computed before any verdict ----
     #
@@ -933,6 +1083,18 @@ def main() -> int:
         "n_clusters": len(clusters),
         "n_clusters_straddling_a_fold": len(straddling),
         "n_clusters_straddling_dev": len(dev_straddling),
+        "pixel_duplicate_groups": len(pixel_blocks),
+        "pixel_duplicate_groups_already_caught": len(already),
+        "pixel_duplicate_groups_new": len(novel),
+        "pixel_duplicate_groups_new_conflicting": len(novel_conflicting),
+        "pixel_duplicate_groups_new_straddling": len(novel_straddling),
+        "pixel_duplicate_detail": pixel_blocks,
+        "pixel_hash_note": (
+            "sha1 over the decoded RGB buffer before any letterbox or resize. "
+            "Exact: zero false positives by construction, and robust to "
+            "re-encoding, which file-level sha1 is not. Run over all indexed "
+            "images, not the clean subset."
+        ),
         "n_pairs_confirmed_by_pixels": len(confirmed),
         "ssim_duplicate_threshold": SSIM_DUPLICATE,
         "ssim_certain_threshold": SSIM_CERTAIN,
@@ -993,6 +1155,10 @@ def main() -> int:
     )
 
     rule("VERDICT")
+    print("  EXACT decoded-pixel duplicate groups, NEW : %d" % len(novel))
+    print("    of those with CONFLICTING labels        : %d" % len(novel_conflicting))
+    print("    of those straddling a fold              : %d" % len(novel_straddling))
+    print()
     print("  hash-flagged pairs                 : %d" % len(primary))
     print("  surviving the pixel check          : %d" % len(confirmed))
     print("  in clusters that straddle a fold   : %d cluster(s)"
@@ -1000,6 +1166,21 @@ def main() -> int:
     print("  timestamps consistent with re-capture: %s"
           % ("yes" if timestamps_agree else "NO"))
     print()
+
+    if novel_conflicting:
+        print("  ONE CARD, TWO LABELS -- found by the decoded-pixel hash, not by")
+        print("  the perceptual one. This is the SAME defect the 13 conflict groups")
+        print("  were excluded for; file-level sha1 missed it because a re-encode")
+        print("  changes every byte while leaving the decoded image identical.")
+        print()
+        print("  DIRECTION OF THE BIAS: because the labels DIFFER, a straddling")
+        print("  group teaches one label and tests the other, so it guarantees an")
+        print("  error at test time. It DEPRESSES the reported numbers rather than")
+        print("  inflating them -- the conservative direction.")
+        print()
+        print("  NO REMEDY IS RECOMMENDED HERE and nothing has been changed. The")
+        print("  count is in artifacts/pixel_duplicates.csv; the decision is yours.")
+        print()
 
     if not confirmed:
         print("  NO PAIR SURVIVES THE PIXEL CHECK. Nothing here is a duplicate.")

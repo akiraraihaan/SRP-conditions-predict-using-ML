@@ -457,3 +457,185 @@ def test_a_contact_sheet_is_produced_for_the_largest_clusters(audit):
     source = inspect.getsource(audit.contact_sheet)
     assert "n_clusters: int = 10" in source
     assert "MIXED" in source, "a mixed-label row must be labelled as such"
+
+
+# ============================================================================
+# The decoded-pixel hash: the check that was actually missing.
+#
+# File sha1 detects duplicate FILES. A re-encode changes every byte and leaves
+# the decoded image identical, so the same card filed under two class
+# directories slips through with two sha1s and two labels. A perceptual hash
+# does not find these reliably either -- on line art over uniform white it
+# floods the result with same-shape, different-card pairs.
+#
+# Hashing the decoded RGB buffer is exact: zero false positives by
+# construction, and robust to re-encoding.
+# ============================================================================
+
+
+def a_card(size=(64, 48), shift=0):
+    """A thin dark curve on white -- the shape of the real corpus."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", size, "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse([5 + shift, 5, size[0] - 6, size[1] - 6], outline="black")
+    return image
+
+
+def test_a_reencode_keeps_the_decoded_hash(audit, tmp_path):
+    """THE case file sha1 cannot reach. Same pixels, different bytes."""
+    import hashlib
+
+    original = tmp_path / "a.png"
+    reencoded = tmp_path / "b.png"
+    card = a_card()
+    card.save(original, optimize=False, compress_level=0)
+    card.save(reencoded, optimize=True, compress_level=9)
+
+    file_a = hashlib.sha1(original.read_bytes()).hexdigest()
+    file_b = hashlib.sha1(reencoded.read_bytes()).hexdigest()
+    assert file_a != file_b, "the fixture must actually re-encode"
+
+    assert audit.decoded_pixel_sha1(original) == audit.decoded_pixel_sha1(reencoded)
+
+
+def test_a_format_change_keeps_the_decoded_hash(audit, tmp_path):
+    png, bmp = tmp_path / "a.png", tmp_path / "a.bmp"
+    card = a_card()
+    card.save(png)
+    card.save(bmp)
+    assert audit.decoded_pixel_sha1(png) == audit.decoded_pixel_sha1(bmp)
+
+
+def test_one_different_pixel_changes_the_hash(audit, tmp_path):
+    """Exact means exact: this is not a near-duplicate detector."""
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    card = a_card()
+    card.save(a)
+    card.putpixel((0, 0), (254, 255, 255))
+    card.save(b)
+    assert audit.decoded_pixel_sha1(a) != audit.decoded_pixel_sha1(b)
+
+
+def test_a_different_card_is_a_different_hash(audit, tmp_path):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    a_card().save(a)
+    a_card(shift=3).save(b)
+    assert audit.decoded_pixel_sha1(a) != audit.decoded_pixel_sha1(b)
+
+
+def test_the_size_is_folded_in(audit, tmp_path):
+    """Two buffers of equal length at different dimensions must not collide."""
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    from PIL import Image
+
+    Image.new("RGB", (4, 6), "white").save(a)
+    Image.new("RGB", (6, 4), "white").save(b)
+    assert audit.decoded_pixel_sha1(a) != audit.decoded_pixel_sha1(b)
+
+
+# ------------------------------------------------------------ grouping
+
+
+def index_of(rows):
+    import pandas as pd
+
+    return pd.DataFrame(rows)
+
+
+def test_excluded_images_are_still_scanned(audit, tmp_path):
+    """Over all 695, not the clean 668: a group the existing rule already
+    excluded must be distinguishable from one nothing has caught."""
+    (tmp_path / "c").mkdir()
+    for name in ("one.png", "two.png"):
+        a_card().save(tmp_path / "c" / name)
+    index = index_of([
+        {"idx": 0, "relpath": "c/one.png", "class": "a", "sha1": "x", "excluded": True},
+        {"idx": 1, "relpath": "c/two.png", "class": "b", "sha1": "y", "excluded": True},
+    ])
+
+    groups = audit.pixel_duplicate_groups(index, tmp_path, quiet=True)
+
+    assert len(groups) == 1
+    assert sorted(next(iter(groups.values()))) == [0, 1]
+
+
+def test_a_singleton_is_not_a_group(audit, tmp_path):
+    (tmp_path / "c").mkdir()
+    a_card().save(tmp_path / "c" / "one.png")
+    a_card(shift=4).save(tmp_path / "c" / "two.png")
+    index = index_of([
+        {"idx": 0, "relpath": "c/one.png", "class": "a", "sha1": "x", "excluded": False},
+        {"idx": 1, "relpath": "c/two.png", "class": "a", "sha1": "y", "excluded": False},
+    ])
+    assert audit.pixel_duplicate_groups(index, tmp_path, quiet=True) == {}
+
+
+# ------------------------------------------------------------ the description
+
+
+def make_by_idx(rows):
+    return {r["idx"]: r for r in rows}
+
+
+def test_one_file_sha1_means_the_existing_rule_already_caught_it(audit):
+    by_idx = make_by_idx([
+        {"idx": 0, "class": "a", "sha1": "same", "excluded": True, "relpath": "a/0.png"},
+        {"idx": 1, "class": "b", "sha1": "same", "excluded": True, "relpath": "b/1.png"},
+    ])
+    block = audit.describe_pixel_group([0, 1], by_idx, [], None)
+
+    assert block["already_caught_by_file_sha1"] is True
+    assert block["n_file_sha1s"] == 1
+    assert block["all_members_excluded"] is True
+
+
+def test_two_file_sha1s_means_a_reencode_nothing_caught(audit):
+    """The defect this check exists for."""
+    by_idx = make_by_idx([
+        {"idx": 297, "class": "natural_flowing", "sha1": "aaa", "excluded": False,
+         "relpath": "natural_flowing/uuid.png"},
+        {"idx": 655, "class": "vibration", "sha1": "bbb", "excluded": False,
+         "relpath": "vibration/Screenshot 2026-04-19 115549.png"},
+    ])
+    folds = [fold(0, f, train=[297], test=[655]) for f in range(3)]
+
+    block = audit.describe_pixel_group([297, 655], by_idx, folds, None)
+
+    assert block["already_caught_by_file_sha1"] is False
+    assert block["n_file_sha1s"] == 2
+    assert block["label_consistent"] is False
+    assert block["labels"] == ["natural_flowing", "vibration"]
+    assert block["n_folds_straddled"] == 3
+    assert block["n_excluded_members"] == 0
+
+
+def test_a_consistent_label_group_is_benign(audit):
+    """Byte- or pixel-identical within one class is duplication, not a conflict."""
+    by_idx = make_by_idx([
+        {"idx": 0, "class": "a", "sha1": "x", "excluded": False, "relpath": "a/0.png"},
+        {"idx": 1, "class": "a", "sha1": "y", "excluded": False, "relpath": "a/1.png"},
+    ])
+    block = audit.describe_pixel_group([0, 1], by_idx, [], None)
+    assert block["label_consistent"] is True
+
+
+# --------------------------------------------------------------- the verdict
+
+
+def test_the_pixel_finding_states_the_direction_of_the_bias(audit):
+    """Conflicting labels mean the straddle teaches one label and tests the
+    other, so it DEPRESSES the reported numbers -- the conservative direction.
+    Saying so is the difference between a documented residual and a scare."""
+    source = (REPO_ROOT / "scripts" / "09_duplicate_audit.py").read_text(encoding="utf-8")
+    assert "DIRECTION OF THE BIAS" in source
+    assert "DEPRESSES the reported numbers" in source
+    assert "NO REMEDY IS RECOMMENDED HERE" in source
+
+
+def test_the_pixel_check_runs_over_the_full_index(audit):
+    source = (REPO_ROOT / "scripts" / "09_duplicate_audit.py").read_text(encoding="utf-8")
+    assert "pixel_duplicate_groups(index, data_root" in source, (
+        "must be handed the full index, not the resolved 668"
+    )
