@@ -501,25 +501,25 @@ def library_versions() -> dict[str, str]:
         if torch.cuda.is_available():
             versions["gpu"] = torch.cuda.get_device_name(0)
 
-        # THE CUDA LIBRARY STACK, not just the CUDA toolkit version.
+        # THE FULL LIBRARY STACK, not just the CUDA toolkit version.
         #
-        # Three arms stopped reproducing their recorded metrics on the same T4
-        # under the same torch 2.12.0+cu130 -- yolo26s 1.04e-2,
-        # mobilenetv3_small 1.67e-2, resnet18 6.8e-3. It was not run-to-run
-        # noise: two fresh runs agreed with each other exactly and both
-        # differed from the record. Reinstalling torch from the cu130 index had
-        # moved cuDNN and cuBLAS underneath.
+        # Three arms stop reproducing their recorded metrics when a fold is
+        # re-run in a LATER SESSION -- mobilenetv3_small up to 1.9e-2 macro-F1
+        # and 7.3e-2 precision_macro, yolo26s 1.04e-2, resnet18 6.8e-3 -- while
+        # yolo26n and yolo26m reproduce exactly and every arm reproduces exactly
+        # WITHIN a session. The GPU model and the torch version were the same
+        # throughout, so `torch` and `torch_cuda` cannot distinguish the two
+        # environments at all.
         #
-        # `torch_cuda` alone cannot show that -- it was identical across the two
-        # environments. These are the fields that would have explained the
-        # mismatch in one line instead of an afternoon.
+        # THE CAUSE IS UNIDENTIFIED. These fields are recorded so that the next
+        # occurrence can be compared against something rather than guessed at --
+        # recording a version is not a claim that it is responsible.
         #
         # EVERY NAME HERE MEANS WHAT IT SAYS. torch has no public cuBLAS version
-        # API, so the cuBLAS version is read from the installed nvidia-cublas-*
-        # distribution -- which is the thing that actually moves when torch is
-        # reinstalled from a different CUDA index. Naming something else
-        # "cublas" would repeat the mistake this project just removed from
-        # configs/arms.yaml.
+        # API, so that version is read from the installed nvidia-cublas-*
+        # distribution rather than from something that merely looks like it.
+        # Naming a different number "cublas" would repeat the mistake this
+        # project just removed from configs/arms.yaml.
         versions["cudnn"] = str(torch.backends.cudnn.version())
         versions["cudnn_enabled"] = str(torch.backends.cudnn.enabled)
         versions["torch_compiled_cuda"] = str(

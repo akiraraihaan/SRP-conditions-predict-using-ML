@@ -362,7 +362,8 @@ def test_quantisation_does_not_baseline_against_the_registry():
     assert "INTERNALLY CONSISTENT, NOT A REPRODUCTION" in source
     assert "macro_f1_fp32_recorded_in_registry" in source
     assert "CONTEXT ONLY" in source or "Context only" in source
-    assert "ENVIRONMENT difference, not a" in source
+    assert "between-session difference, not a" in source
+    assert "UNIDENTIFIED" in source
 
 
 # ======================================================= 11, rebuilt
@@ -403,57 +404,79 @@ def test_a_missing_row_refuses_to_conclude(recipe):
     assert "yolo26n / native recipe" in lines
 
 
-def test_the_environment_finding_is_computed_not_written(recipe):
-    """Hardcoding 0.147 would make the paragraph a claim rather than a result."""
-    import pandas as pd
-
-    frame = pd.DataFrame([
-        {"kind": "summary", "arm": "mobilenetv3_small", "n_folds": 5,
-         "delta": -0.0109, "max_abs_delta": 0.1470, "reproduces_exactly": False},
-        {"kind": "summary", "arm": "yolo26n", "n_folds": 5,
-         "delta": 0.0, "max_abs_delta": 0.0, "reproduces_exactly": True},
-    ])
-    lines = " ".join(recipe.environment_finding(frame))
-
-    assert "0.147" in lines and "0.011" in lines
-    assert "mobilenetv3_small" in lines and "yolo26n" in lines
-    assert "ARCHITECTURE-DEPENDENT" in lines
-    assert "1 of the 2" in lines
-
-
-def test_causality_is_stated_as_plausible_not_proven(recipe):
-    import pandas as pd
-
-    frame = pd.DataFrame([
-        {"kind": "summary", "arm": "a", "n_folds": 5, "delta": 0.01,
-         "max_abs_delta": 0.1, "reproduces_exactly": False},
-    ])
-    lines = " ".join(recipe.environment_finding(frame))
-    assert "CUDA library stack" in lines
-    assert "PLAUSIBLE mechanism, not a proven one" in lines
-    assert "cuDNN caused" not in lines
-
-
-def test_the_emit_deltas_are_marked_as_reported_when_no_sidecar(recipe):
+def test_reproduction_is_exact_within_a_session(recipe):
+    """Two --emit-weights runs of mobilenetv3_small r0f0 in one session both
+    gave 0.673445, epoch for epoch. That is the control that makes the
+    between-session spread mean something."""
+    assert "0.673445" in recipe.WITHIN_SESSION
     frame = recipe.environment_replication([], 0, None)
-    support = frame[frame["kind"] == "emit_weights_reproduction"]
-    assert len(support) == 3
-    assert all("REPORTED" in s for s in support["source"])
+    assert set(frame["within_session"]) == {"exact"}
 
 
-def test_a_sidecar_is_preferred_over_the_reported_value(recipe, tmp_path):
+def test_the_between_session_spread_is_per_arm(recipe):
+    frame = recipe.environment_replication([], 0, None)
+    by_arm = dict(zip(frame["arm"], frame["f1_macro_spread"]))
+    assert by_arm["mobilenetv3_small"] == 1.9e-2
+    assert by_arm["yolo26s"] == 1.04e-2
+    assert by_arm["resnet18"] == 6.8e-3
+    assert by_arm["yolo26n"] == 0.0
+    assert by_arm["yolo26m"] == 0.0
+
+    precision = dict(zip(frame["arm"], frame["precision_macro_spread"]))
+    assert precision["mobilenetv3_small"] == 7.3e-2
+
+
+def test_two_arms_reproduce_exactly_and_are_reported_as_such(recipe):
+    frame = recipe.environment_replication([], 0, None)
+    exact = set(frame.loc[frame["reproduces_exactly"], "arm"])
+    assert exact == {"yolo26n", "yolo26m"}
+
+    lines = " ".join(recipe.environment_finding(frame))
+    assert "reproduce EXACTLY across sessions" in lines
+    assert "2 of the 5" in lines
+
+
+def test_the_cause_is_stated_as_unidentified_and_no_mechanism_is_named(recipe):
+    """Earlier drafts blamed the CUDA library stack. The same GPU model and the
+    same torch version were in force, so that is not supported -- and a
+    reinstall coinciding in time is not evidence."""
+    frame = recipe.environment_replication([], 0, None)
+    lines = " ".join(recipe.environment_finding(frame))
+
+    assert "CAUSE IS UNIDENTIFIED" in lines
+    assert "none has been tested" in lines
+    assert set(frame["cause"]) == {"unidentified"}
+
+    source = (REPO_ROOT / "scripts" / "11_recipe_check.py").read_text(encoding="utf-8")
+    for forbidden in ("cuDNN", "cudnn", "cuBLAS", "cublas"):
+        assert forbidden not in source, (
+            "11 must name no mechanism: found %r" % forbidden
+        )
+
+
+def test_the_finding_says_what_it_means_for_the_manuscript(recipe):
+    """A spread is only useful if it says what may be quoted."""
+    frame = recipe.environment_replication([], 0, None)
+    lines = " ".join(recipe.environment_finding(frame))
+    # the sentence wraps, so match on parts that survive the line break
+    assert "more precision" in lines and "not reproducible at that" in lines
+    assert "15-fold mean" in lines
+
+
+def test_a_sidecar_row_is_computed_when_one_is_available(recipe, tmp_path):
     import json
 
     (tmp_path / "resnet18.json").write_text(json.dumps({
+        "arm": "resnet18",
         "measured": {"f1_macro": 0.60}, "recorded": {"f1_macro": 0.6068},
         "measured_minus_recorded": -0.0068,
     }), encoding="utf-8")
 
     frame = recipe.environment_replication([], 0, tmp_path)
-    row = frame[(frame["kind"] == "emit_weights_reproduction")
-                & (frame["arm"] == "resnet18")].iloc[0]
-    assert "sidecar" in row["source"]
+    row = frame[frame["kind"] == "checkpoint_sidecar"].iloc[0]
+    assert row["arm"] == "resnet18"
     assert row["delta"] == -0.0068
+    assert row["cause"] == "unidentified"
 
 
 def test_the_native_recipe_is_read_back_not_quoted():

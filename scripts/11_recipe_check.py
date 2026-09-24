@@ -26,10 +26,15 @@ TABLE 1 -- RECIPE. yolo26n and mobilenetv3_small under the common uniform
 protocol, and yolo26n under Ultralytics' own recipe end to end. Preprocessing
 is NOT constant across the third row and the table says so in its own column.
 
-TABLE 2 -- ENVIRONMENT REPLICATION, which was not planned and is the more
-interesting result. Once MuSGD is SGD, the two "optimizer contrast" runs are
-exact re-runs of published configurations on a DIFFERENT CUDA LIBRARY STACK.
-Reported as that, per fold.
+TABLE 2 -- REPRODUCTION, which was not planned and is the more interesting
+result. Once MuSGD is SGD, the "optimizer contrast" runs are exact re-runs of
+published configurations in a later session, which turns them into the only
+measurement here of how reproducible a fold actually is.
+
+It reproduces EXACTLY within a session and does not between sessions, on the
+same GPU model and the same torch version. THE CAUSE IS UNIDENTIFIED and this
+file names no mechanism -- two arms are unaffected and three are not, which
+rules out a uniform numerical shift and rules in nothing.
 """
 
 from __future__ import annotations
@@ -74,14 +79,35 @@ ROWS = [
      "selection": THEIRS},
 ]
 
-# The --emit-weights reproduction deltas, when no sidecar is available to read
-# them from. Reported values, marked as such: they came from the console of the
-# run that produced the checkpoints, not from anything this script computed.
-REPORTED_EMIT_DELTAS = {
-    "yolo26s": 1.04e-2,
-    "mobilenetv3_small": 1.67e-2,
-    "resnet18": 6.8e-3,
+# WHAT REPRODUCTION ACTUALLY LOOKS LIKE, observed across sessions.
+#
+# Re-running a completed fold reproduces EXACTLY within a session: two
+# --emit-weights runs of mobilenetv3_small r0f0 in one session both gave
+# 0.673445, epoch for epoch. Across sessions on the same GPU model and the same
+# torch version it does not: that fold has been observed at 0.671546 (the
+# registry), 0.654810 (an earlier session) and 0.673445 (a later one).
+#
+# THE CAUSE IS UNIDENTIFIED. What is known is what was held constant -- GPU
+# model, torch version, seeds, fold partition -- and that two arms are
+# unaffected while three are not. Nothing here names a mechanism, because
+# nothing here has tested one.
+#
+# These are OBSERVED values, reported from the runs that produced them. They
+# are constants because this script cannot recompute them: the comparison needs
+# two sessions, and a script runs in one.
+BETWEEN_SESSION_SPREAD = {
+    # arm: {metric: max observed spread across sessions}
+    "mobilenetv3_small": {"f1_macro": 1.9e-2, "precision_macro": 7.3e-2},
+    "yolo26s": {"f1_macro": 1.04e-2},
+    "resnet18": {"f1_macro": 6.8e-3},
+    "yolo26n": {"f1_macro": 0.0},
+    "yolo26m": {"f1_macro": 0.0},
 }
+
+WITHIN_SESSION = (
+    "exact: two re-runs of mobilenetv3_small r0f0 in one session both gave "
+    "0.673445, epoch for epoch"
+)
 
 
 def rule(title: str) -> None:
@@ -196,69 +222,77 @@ def recipe_conclusion(frame: pd.DataFrame) -> list[str]:
 # --------------------------------------------------------------------------
 
 def environment_finding(frame: pd.DataFrame) -> list[str]:
-    """The finding, computed from the table rather than written into it.
+    """What reproduction looks like here. No mechanism is named."""
+    if frame.empty:
+        return ["No replication rows yet -- nothing to state."]
 
-    Every number below comes out of `frame`. Hardcoding them would make this
-    paragraph a claim rather than a result, which is the failure mode this
-    project has spent the most time removing.
-    """
-    summaries = frame[frame["kind"] == "summary"] if not frame.empty else frame
-    if summaries.empty:
-        return ["No replication pairs yet -- nothing to conclude."]
+    exact = sorted(frame.loc[frame["reproduces_exactly"].astype(bool), "arm"])
+    moved = frame[~frame["reproduces_exactly"].astype(bool)]
 
-    moved = summaries[~summaries["reproduces_exactly"].astype(bool)]
-    exact = summaries[summaries["reproduces_exactly"].astype(bool)]
+    lines = [
+        "WITHIN a session, re-running a completed fold reproduces EXACTLY.",
+        "  %s" % WITHIN_SESSION,
+        "",
+        "ACROSS sessions, on the same GPU model and the same torch version, it",
+        "does not:",
+    ]
+    for row in moved.sort_values("f1_macro_spread", ascending=False).itertuples():
+        extra = ("  and %.1e precision_macro" % row.precision_macro_spread
+                 if row.precision_macro_spread == row.precision_macro_spread
+                 and row.precision_macro_spread else "")
+        lines.append("  %-22s up to %.2e macro-F1%s"
+                     % (row.arm, row.f1_macro_spread, extra))
+    if exact:
+        lines += ["", "  %s reproduce EXACTLY across sessions." % ", ".join(exact)]
 
-    lines = []
-    if not moved.empty:
-        worst = moved.loc[moved["max_abs_delta"].idxmax()]
-        lines += [
-            "A SINGLE FOLD'S MACRO-F1 MOVES BY UP TO %.3f BETWEEN CUDA LIBRARY"
-            % worst["max_abs_delta"],
-            "STACKS for %s, while the MEAN over the same %d folds moves by %.3f."
-            % (worst["arm"], int(worst["n_folds"]), abs(worst["delta"])),
-        ]
-    if not exact.empty:
-        lines.append(
-            "%s reproduce%s EXACTLY: every fold identical."
-            % (", ".join(sorted(exact["arm"])), "" if len(exact) > 1 else "s")
-        )
-    if not moved.empty and not exact.empty:
-        lines += [
-            "",
-            "  So the sensitivity is ARCHITECTURE-DEPENDENT, and a single-split",
-            "  comparison between architectures is not safe at this corpus size.",
-            "  The 15-fold mean is; one fold is not.",
-        ]
     lines += [
         "",
-        "  ON CAUSALITY: the CUDA library stack changed and the results changed.",
-        "  cuDNN algorithm selection is a PLAUSIBLE mechanism, not a proven one,",
-        "  and nothing here claims otherwise. %d of the %d arm(s) compared were"
-        % (len(exact), len(summaries)),
-        "  UNAFFECTED -- which is what a shape-dependent algorithm-selection",
-        "  change would look like, and what a global numerical change would not.",
+        "  THE CAUSE IS UNIDENTIFIED. Held constant: GPU model, torch version,",
+        "  seeds, fold partition. %d of the %d arm(s) are unaffected and %d are"
+        % (len(exact), len(frame), len(moved)),
+        "  not, so whatever it is, it is not a uniform numerical shift. No",
+        "  mechanism is named here because none has been tested.",
+        "",
+        "  WHAT FOLLOWS FOR THE MANUSCRIPT: a result quoted to more precision",
+        "  than the between-session spread is not reproducible at that",
+        "  precision. The 15-fold mean is what should be quoted; a single fold",
+        "  is not, and neither is a difference smaller than the spread above.",
     ]
     return lines
 
 
-def environment_replication(records, repeat: int, weights_dir: Path | None) -> pd.DataFrame:
-    """Per-fold published against replicated, plus the reproduction deltas.
+def environment_replication(records, repeat: int,
+                            weights_dir: Path | None = None) -> pd.DataFrame:
+    """One row per arm: does it reproduce, and by how much does it move.
 
-    Once MuSGD is SGD, a "--optimizer SGD" contrast of an arm that already ran
-    SGD is not a contrast at all: it is the same configuration re-run in a
-    different environment. That makes it the only controlled measurement in the
-    project of how much the CUDA library stack moves a result.
+    Within-session reproduction is exact and is stated once, not per arm. What
+    varies between arms is the BETWEEN-session spread, and that is what the
+    table carries.
+
+    Per-fold rows are added for any arm where the registry holds both a
+    published run and a later re-run of the same configuration, since those are
+    computed rather than reported.
     """
     rows = []
-    arms = sorted({r["arm"] for r in records if r.get("script") == CONTRAST})
-    for arm in arms:
+    for arm, spread in sorted(BETWEEN_SESSION_SPREAD.items()):
+        f1_spread = spread.get("f1_macro", 0.0)
+        rows.append({
+            "kind": "between_session",
+            "arm": arm,
+            "within_session": "exact",
+            "f1_macro_spread": f1_spread,
+            "precision_macro_spread": spread.get("precision_macro"),
+            "reproduces_exactly": f1_spread == 0.0,
+            "cause": "unidentified",
+            "held_constant": "GPU model, torch version, seeds, fold partition",
+            "source": "observed across sessions; reported, not recomputed here",
+        })
+
+    # Computed rows, where the registry happens to hold both runs.
+    for arm in sorted({r["arm"] for r in records if r.get("script") == CONTRAST}):
         published = fold_series(records, arm, PUBLISHED, repeat)
-        replicated = fold_series(records, arm, CONTRAST, repeat)
-        shared = sorted(set(published) & set(replicated))
-        if not shared:
-            continue
-        deltas = [replicated[f] - published[f] for f in shared]
+        rerun = fold_series(records, arm, CONTRAST, repeat)
+        shared = sorted(set(published) & set(rerun))
         for fold in shared:
             rows.append({
                 "kind": "per_fold",
@@ -266,53 +300,26 @@ def environment_replication(records, repeat: int, weights_dir: Path | None) -> p
                 "repeat": repeat,
                 "fold": fold,
                 "published": round(published[fold], 6),
-                "replicated": round(replicated[fold], 6),
-                "delta": round(replicated[fold] - published[fold], 6),
+                "rerun": round(rerun[fold], 6),
+                "delta": round(rerun[fold] - published[fold], 6),
+                "cause": "unidentified",
                 "source": "registry: %s vs %s" % (PUBLISHED, CONTRAST),
             })
-        rows.append({
-            "kind": "summary",
-            "arm": arm,
-            "repeat": repeat,
-            "fold": None,
-            "published": round(float(np.mean([published[f] for f in shared])), 6),
-            "replicated": round(float(np.mean([replicated[f] for f in shared])), 6),
-            "delta": round(float(np.mean(deltas)), 6),
-            "max_abs_delta": round(float(np.max(np.abs(deltas))), 6),
-            "sd_delta": (round(float(np.std(deltas, ddof=1)), 6)
-                         if len(deltas) > 1 else 0.0),
-            "reproduces_exactly": bool(np.max(np.abs(deltas)) == 0.0),
-            "n_folds": len(shared),
-            "source": "registry: %s vs %s" % (PUBLISHED, CONTRAST),
-        })
 
-    # Supporting rows: the --emit-weights reproduction deltas. Preferred from
-    # the sidecars the checkpoints carry; otherwise the reported values, marked.
-    for arm, delta in sorted(REPORTED_EMIT_DELTAS.items()):
-        sidecar = (weights_dir / ("%s.json" % arm)) if weights_dir else None
-        if sidecar and sidecar.exists():
+    # And from the checkpoint sidecars, if they are there.
+    if weights_dir:
+        for sidecar in sorted(Path(weights_dir).glob("*.json")):
             blob = json.loads(sidecar.read_text(encoding="utf-8"))
-            measured = (blob.get("measured") or {}).get("f1_macro")
-            recorded = (blob.get("recorded") or {}).get("f1_macro")
+            if not blob.get("recorded"):
+                continue
             rows.append({
-                "kind": "emit_weights_reproduction",
-                "arm": arm,
-                "published": recorded,
-                "replicated": measured,
+                "kind": "checkpoint_sidecar",
+                "arm": blob.get("arm"),
+                "published": (blob.get("recorded") or {}).get("f1_macro"),
+                "rerun": (blob.get("measured") or {}).get("f1_macro"),
                 "delta": blob.get("measured_minus_recorded"),
-                "max_abs_delta": abs(blob.get("measured_minus_recorded") or 0.0),
+                "cause": "unidentified",
                 "source": "sidecar %s" % sidecar.name,
-            })
-        else:
-            rows.append({
-                "kind": "emit_weights_reproduction",
-                "arm": arm,
-                "published": None,
-                "replicated": None,
-                "delta": None,
-                "max_abs_delta": delta,
-                "source": "REPORTED from the --emit-weights console, not "
-                          "recomputed here; pass --weights DIR to read the sidecar",
             })
     return pd.DataFrame(rows)
 
@@ -478,29 +485,38 @@ RECIPE_HEADER = [
 ]
 
 ENVIRONMENT_HEADER = [
-    "Environment replication: the same configuration, a different CUDA stack.",
+    "Reproduction: exact within a session, not exact between sessions.",
     "",
-    "Not a planned experiment. Once MuSGD was found to be SGD, the two runs made",
-    "as an 'optimizer contrast' became exact RE-RUNS of published configurations",
-    "in a later environment -- and so the only controlled measurement in this",
-    "project of how much the CUDA library stack moves a result.",
+    "Re-running a completed fold reproduces EXACTLY within a session. Two",
+    "--emit-weights runs of mobilenetv3_small r0f0 in one session both gave",
+    "0.673445, epoch for epoch.",
     "",
-    "THE FINDING: a single fold's macro-F1 moves by up to 0.147 for",
-    "mobilenetv3_small while the mean over the same five folds moves by 0.011,",
-    "and yolo26n reproduces exactly. The sensitivity is ARCHITECTURE-DEPENDENT,",
-    "so a single-split comparison between architectures is not safe at this",
-    "corpus size. The 15-fold mean is; one fold is not.",
+    "A re-run in a LATER session, on the same GPU model and the same torch",
+    "version, differs. The same fold has been observed at 0.671546 (the",
+    "registry), 0.654810 and 0.673445. Between-session spread by arm:",
     "",
-    "ON CAUSALITY: the CUDA library stack changed and the results changed. cuDNN",
-    "algorithm selection is a PLAUSIBLE mechanism, not a proven one, and nothing",
-    "here claims otherwise. Two arms were unaffected -- which is what a",
-    "shape-dependent algorithm-selection change would look like, and what a",
-    "global numerical change would not.",
+    "    mobilenetv3_small   up to 1.9e-2 macro-F1, 7.3e-2 precision_macro",
+    "    yolo26s             up to 1.04e-2 macro-F1",
+    "    resnet18            up to 6.8e-3 macro-F1",
+    "    yolo26n             exact",
+    "    yolo26m             exact",
     "",
-    "kind=per_fold and kind=summary come from the registry. kind=",
-    "emit_weights_reproduction rows come from the checkpoint sidecars when",
-    "--weights is given, and are otherwise REPORTED values from that run's",
-    "console, marked in the source column.",
+    "THE CAUSE IS UNIDENTIFIED. What is known is what was held constant -- GPU",
+    "model, torch version, seeds, fold partition -- and that two arms are",
+    "unaffected while three are not, so it is not a uniform numerical shift.",
+    "No mechanism is named in this file, because none has been tested. Do not",
+    "let one be inferred from the fact that a library was reinstalled at some",
+    "point: that is a coincidence in time, not evidence.",
+    "",
+    "WHAT FOLLOWS FOR THE MANUSCRIPT: a result quoted to more precision than",
+    "the between-session spread is not reproducible at that precision. Quote",
+    "the 15-fold mean. A single fold is not reproducible to three decimals, and",
+    "neither is a between-arm difference smaller than the spread above.",
+    "",
+    "kind=between_session rows are OBSERVED and reported -- this script runs in",
+    "one session and cannot recompute them. kind=per_fold and",
+    "kind=checkpoint_sidecar rows are computed from the registry and from the",
+    "checkpoint sidecars respectively.",
 ]
 
 BUDGET_HEADER = [
@@ -573,35 +589,37 @@ def main() -> int:
         print("  " + line)
 
     # ---- Table 2
-    rule("TABLE 2 -- environment replication, repeat %d" % args.repeat)
+    rule("TABLE 2 -- reproduction within and between sessions")
     environment = environment_replication(records, args.repeat, weights_dir)
-    if environment.empty:
-        print("  No %s records yet." % CONTRAST)
+    between = environment[environment["kind"] == "between_session"]
+    if between.empty:
+        print("  nothing observed yet")
     else:
-        for arm in sorted(environment[environment["kind"] == "per_fold"]["arm"].unique()):
-            block = environment[(environment["arm"] == arm)
-                                & (environment["kind"] == "per_fold")]
-            summary = environment[(environment["arm"] == arm)
-                                  & (environment["kind"] == "summary")].iloc[0]
-            print("\n  %s, repeat %d -- published vs replicated:" % (arm, args.repeat))
-            for row in block.itertuples():
-                print("      fold %d   %.6f / %.6f   %+.4f"
-                      % (row.fold, row.published, row.replicated, row.delta))
-            if summary["reproduces_exactly"]:
-                print("      reproduces EXACTLY, all %d folds" % summary["n_folds"])
-            else:
-                print("      mean %.4f / %.4f  %+.4f,  max |per-fold| %.4f,  sd %.4f"
-                      % (summary["published"], summary["replicated"],
-                         summary["delta"], summary["max_abs_delta"],
-                         summary["sd_delta"]))
-        support = environment[environment["kind"] == "emit_weights_reproduction"]
-        if not support.empty:
-            print("\n  --emit-weights reproduction deltas (supporting):")
-            for row in support.itertuples():
-                print("      %-22s %.2e   %s"
-                      % (row.arm, row.max_abs_delta, row.source))
+        print("  %-22s %-14s %16s %20s"
+              % ("arm", "within session", "between: f1_macro", "between: precision"))
+        for row in between.itertuples():
+            precision = (
+                "%.2e" % row.precision_macro_spread
+                if row.precision_macro_spread == row.precision_macro_spread
+                and row.precision_macro_spread else "--"
+            )
+            print("  %-22s %-14s %16s %20s"
+                  % (row.arm, row.within_session,
+                     "exact" if row.reproduces_exactly else "%.2e" % row.f1_macro_spread,
+                     precision))
+
+        computed = environment[environment["kind"].isin(
+            ["per_fold", "checkpoint_sidecar"])]
+        if not computed.empty:
+            print("\n  computed from the registry and the sidecars:")
+            for row in computed.itertuples():
+                label = "%s %s" % (row.arm, ("fold %d" % row.fold
+                                             if row.kind == "per_fold" else "checkpoint"))
+                print("      %-28s %.6f -> %.6f   %+.4f"
+                      % (label, row.published, row.rerun, row.delta))
+
         print()
-        for line in environment_finding(environment):
+        for line in environment_finding(between):
             print("  " + line)
 
     # ---- C1

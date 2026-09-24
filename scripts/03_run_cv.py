@@ -118,14 +118,13 @@ def save_fold_weights(out_dir: Path, spec, bundle, result, f1_macro: float,
                     "fixed benchmark fold from configs/arms.yaml:"
                     "reporting.benchmark_fold -- not chosen on test performance"
                 ),
-                # THIS CHECKPOINT'S OWN METRICS, measured in the environment
-                # that produced it, beside what the registry recorded when the
-                # run was first made. They can differ without either being
-                # wrong: reinstalling torch from a different CUDA index moves
-                # cuDNN and cuBLAS underneath, and three arms stopped matching
-                # their records for exactly that reason on an unchanged T4.
-                # Anything downstream must compare against `measured`, never
-                # against `recorded`.
+                # THIS CHECKPOINT'S OWN METRICS, measured in the session that
+                # produced it, beside what the registry recorded when the run
+                # was first made. They can differ without either being wrong:
+                # a fold reproduces exactly WITHIN a session and not between
+                # sessions, on the same GPU model and torch version, for a
+                # reason nobody has identified. Anything downstream must
+                # compare against `measured`, never against `recorded`.
                 "measured": dict(metrics or {"f1_macro": f1_macro}),
                 "recorded": dict(recorded or {}),
                 "measured_minus_recorded": (

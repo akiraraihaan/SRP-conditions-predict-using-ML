@@ -234,16 +234,15 @@ ENVIRONMENT_NOTE = """
   quantisation costs, holding everything else fixed.
 
   It is NOT a reproduction of the published figure, and must not be read as
-  one. Three arms stopped reproducing their recorded metrics on an unchanged
-  T4 under the same torch 2.12.0+cu130 -- yolo26s 1.04e-2, mobilenetv3_small
-  1.67e-2, resnet18 6.8e-3. Not run-to-run noise: two fresh runs agreed with
-  each other exactly and both differed from the record. Reinstalling torch
-  from the cu130 index had moved cuDNN and cuBLAS underneath, and torch_cuda
-  alone does not show that. Every new record now carries the cuDNN version and
-  the nvidia-* distribution versions so the next such gap is one line to read.
+  one. A fold reproduces EXACTLY when re-run within a session and does NOT
+  between sessions, on the same GPU model and the same torch version:
+  mobilenetv3_small moves by up to 1.9e-2 macro-F1 and 7.3e-2 precision_macro,
+  yolo26s 1.04e-2, resnet18 6.8e-3, while yolo26n and yolo26m reproduce
+  exactly. THE CAUSE IS UNIDENTIFIED and nothing here names a mechanism.
 
   The registry figure is printed beside the measured one for context. A delta
-  between them is an ENVIRONMENT difference, not a quantisation effect.
+  between them is a BETWEEN-SESSION difference, not a quantisation effect.
+  See artifacts/environment_replication.csv.
 """
 
 HEADER = [
@@ -272,12 +271,13 @@ HEADER = [
     "and every quantisation delta is taken against it. macro_f1_fp32_recorded_",
     "in_registry is CONTEXT ONLY -- do not compute a delta against it.",
     "",
-    "The two can differ without either being wrong. Three arms stopped matching",
-    "their records on an unchanged T4 under the same torch 2.12.0+cu130 because",
-    "reinstalling torch from the cu130 index moved cuDNN and cuBLAS underneath;",
-    "torch_cuda alone does not identify that. A gap in",
-    "macro_f1_fp32_measured_minus_recorded is an ENVIRONMENT difference, not a",
-    "quantisation effect.",
+    "The two can differ without either being wrong. A fold reproduces exactly",
+    "when re-run WITHIN a session and not BETWEEN sessions, on the same GPU",
+    "model and the same torch version -- up to 1.9e-2 macro-F1 for",
+    "mobilenetv3_small, while yolo26n and yolo26m reproduce exactly. The cause",
+    "is UNIDENTIFIED. A gap in macro_f1_fp32_measured_minus_recorded is a",
+    "between-session difference, not a quantisation effect. See",
+    "artifacts/environment_replication.csv.",
 ]
 
 
@@ -390,7 +390,8 @@ def main() -> int:
             "size_mb_fp32": fp32_size,
             # The baseline every delta in this row is taken against.
             "macro_f1_fp32": round(fp32_metrics["f1_macro"], 6),
-            # Context only. Do NOT compute a quantisation delta against this.
+            # Context only, and possibly from a different session. Do NOT
+            # compute a quantisation delta against this.
             "macro_f1_fp32_recorded_in_registry": recorded,
             "macro_f1_fp32_measured_minus_recorded": drift,
             "baseline_is": "measured from this checkpoint, in this environment",
