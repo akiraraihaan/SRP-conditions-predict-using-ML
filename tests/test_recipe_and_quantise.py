@@ -178,6 +178,9 @@ def test_a_static_failure_is_reported_with_its_reason(quantise, monkeypatch):
     def explode(*args, **kwargs):
         raise RuntimeError("Could not run 'quantized::conv2d' with this backend")
 
+    import torch.ao.quantization.quantize_fx as fx
+
+    monkeypatch.setattr(fx, "prepare_fx", explode)
     monkeypatch.setattr(torch.ao.quantization, "prepare", explode)
     module = torch.nn.Linear(4, 2).eval()
 
@@ -528,6 +531,16 @@ def _toy_model():
     return Toy()
 
 
+class _ToyCache16:
+    """224x224, matching the FX example input."""
+
+    def get(self, idx):
+        import numpy as np
+
+        rng = np.random.default_rng(idx)
+        return (rng.random((224, 224, 3)) * 255).astype("uint8")
+
+
 class _ToyCache:
     """The ImageCache interface, over deterministic noise."""
 
@@ -586,6 +599,11 @@ def test_a_failure_names_the_file_it_came_from(quantise, monkeypatch):
     def explode(*args, **kwargs):
         raise ValueError("too many values to unpack (expected 2)")
 
+    # FX is tried first and would succeed, so both paths must fail for the
+    # eager locator to be the thing under test.
+    import torch.ao.quantization.quantize_fx as fx
+
+    monkeypatch.setattr(fx, "prepare_fx", explode)
     monkeypatch.setattr(torch.ao.quantization, "convert", explode)
     result, reason = quantise.static_ptq(_toy_model().eval(), _ToyCache(),
                                          list(range(8)), {i: 0 for i in range(8)})
@@ -963,3 +981,97 @@ def test_prediction_vector_accepts_a_device(quantise):
 
     assert "device" in inspect.signature(quantise.prediction_vector).parameters
     assert "device" in inspect.signature(quantise.macro_f1).parameters
+
+
+# ================================= static PTQ: FX where it works, named gap
+#
+# Eager mode needs the model WRITTEN for quantisation -- residual adds as
+# FloatFunctional, unsupported activations in stubs. FX rewrites the graph
+# instead and leaves operations without a quantised kernel in floating point.
+#
+# Measured on the real architectures: FX converts mobilenetv3_small and
+# resnet18 at 100 % of parameters and both score. It cannot trace the
+# ultralytics forward at all, and eager converts those but produces a graph
+# with no QuantizedCPU kernel for aten::add.out or aten::silu.out. For those
+# three the accuracy cost is UNMEASURED, with a named cause. No third
+# approach was attempted.
+
+
+def test_fx_is_tried_before_eager(quantise):
+    import inspect
+
+    source = inspect.getsource(quantise.static_ptq)
+    fx_at = source.index("static_ptq_fx")
+    eager_at = source.index("_wrap_for_static")
+    assert fx_at < eager_at, "FX handles models not written for quantisation"
+
+
+def test_fx_converts_a_traceable_model_completely(quantise):
+    """mobilenetv3_small and resnet18 reach 100 %. The toy model stands in for
+    them here so the test needs no checkpoint."""
+    pytest.importorskip("torch")
+
+    model = _toy_model().eval()
+    converted, reason = quantise.static_ptq(
+        model, _ToyCache16(), list(range(24)), {i: i % 4 for i in range(24)}
+    )
+    assert converted is not None, reason
+    assert "fx graph mode" in reason
+    assert quantise.quantised_parameter_fraction(model, converted) == 100.0
+
+
+def test_the_parameter_fraction_measures_what_is_left_in_fp32(quantise):
+    """It must work for FX too, whose module names do not survive tracing --
+    which is why the name-matching coverage cannot be the headline number."""
+    torch = pytest.importorskip("torch")
+
+    model = torch.nn.Linear(4, 2)
+    assert quantise.quantised_parameter_fraction(model, model) == 0.0
+
+    class NoParams(torch.nn.Module):
+        pass
+
+    assert quantise.quantised_parameter_fraction(model, NoParams()) == 100.0
+
+
+def test_the_gap_names_both_operations_and_both_approaches(quantise):
+    note = quantise.STATIC_GAP_NOTE
+    assert "aten::add.out" in note and "aten::silu.out" in note
+    assert "residual addition" in note and "SiLU" in note
+    assert "Proxy object cannot be iterated" in note
+    assert "IS NOT MEASURED" in note
+    # the sentence wraps, so match on parts that survive the line break
+    assert "No third" in note and "approach was attempted" in note
+
+
+def test_the_gap_is_in_the_csv_header_too(quantise):
+    header = " ".join(quantise.HEADER)
+    assert "aten::add.out" in header and "aten::silu.out" in header
+    assert "CANNOT BE SCORED" in header
+    assert "IS NOT MEASURED" in header
+    assert "No third approach was tried" in header
+
+
+def test_an_unmeasured_row_says_so_rather_than_n_a(quantise):
+    """'n/a' reads as a missing column. 'NOT MEASURED' is a finding."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert '"NOT MEASURED"' in source
+    assert "STATIC_GAP_NOTE" in source
+
+
+def test_the_coverage_quoted_is_the_parameter_fraction(quantise):
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert '"coverage_pct_%s" % method: converted_pct,' in source
+    assert "coverage_pct_by_layer_name_" in source, (
+        "the name-matched census is kept, but not as the headline number"
+    )
+
+
+def test_the_class_list_exists(quantise):
+    """The flip count died with NameError: name 'classes' is not defined --
+    the check that verifies the deltas, lost to a missing line."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert 'classes = list(data_cfg["classes"])' in source
+    assert source.index('classes = list(data_cfg["classes"])') < source.index(
+        "                        classes,"
+    )

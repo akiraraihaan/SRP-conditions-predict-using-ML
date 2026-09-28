@@ -267,6 +267,51 @@ def calibrate(prepared, cache, calibration_idx, labels_by_idx,
     return seen
 
 
+def quantised_parameter_fraction(fp32, converted) -> float | None:
+    """How much of the model actually became integer, by parameter count.
+
+    Measured as what is LEFT in floating point after conversion, because FX
+    leaves anything without a quantised kernel in fp32 rather than failing.
+    Partial conversion changes what the size number means, so the size must
+    never be quoted without this beside it.
+    """
+    total = sum(p.numel() for p in fp32.parameters())
+    if not total:
+        return None
+    remaining = sum(p.numel() for p in converted.parameters())
+    return round(100.0 * (total - remaining) / total, 2)
+
+
+def static_ptq_fx(module, cache, calibration_idx, labels_by_idx, backend: str):
+    """FX graph mode. Rewrites the graph instead of requiring the model to be
+    written for quantisation.
+
+    Eager mode needs residual adds replaced by FloatFunctional and unsupported
+    activations wrapped in stubs -- a rewrite of three third-party
+    architectures. FX leaves operations with no quantised kernel in floating
+    point rather than raising, which is the behaviour this needs.
+
+    It is not universal: symbolic tracing cannot follow data-dependent control
+    flow, and the ultralytics forward has some. That failure is reported, not
+    worked around.
+    """
+    import copy
+
+    import torch
+    from torch.ao.quantization import get_default_qconfig_mapping
+    from torch.ao.quantization.quantize_fx import convert_fx, prepare_fx
+
+    model = copy.deepcopy(module).eval()
+    example = (torch.rand(1, 3, 224, 224),)
+    prepared = prepare_fx(model, get_default_qconfig_mapping(backend),
+                          example_inputs=example)
+    batches = calibrate(prepared, cache, calibration_idx, labels_by_idx)
+    if not batches:
+        raise RuntimeError("calibration produced no batches")
+    converted = convert_fx(prepared)
+    return converted, batches
+
+
 def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
     """Fuse, calibrate on TRAINING images, convert. Conv2d included.
 
@@ -297,6 +342,19 @@ def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
                           % list(torch.backends.quantized.supported_engines))
         torch.backends.quantized.engine = backend
 
+        # FX FIRST. It is the only one of the two that can handle a model not
+        # written for quantisation, and where it works it converts everything.
+        try:
+            converted, batches = static_ptq_fx(
+                module, cache, calibration_idx, labels_by_idx, backend
+            )
+            return converted, "fx graph mode, backend=%s, %d calibration batch(es)" % (
+                backend, batches
+            )
+        except Exception as fx_error:  # noqa: BLE001 - reported below, with eager's
+            fx_reason = "%s: %s" % (type(fx_error).__name__,
+                                    str(fx_error).replace("\n", " ")[:160])
+
         prepared = _wrap_for_static(copy.deepcopy(module).eval()).eval()
 
         # Fusion is an OPTIMISATION here, not a requirement: fuse_modules needs
@@ -313,15 +371,42 @@ def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
             return None, "calibration produced no batches"
 
         converted = torch.ao.quantization.convert(prepared, inplace=False)
-        return converted, "backend=%s, %d calibration batch(es), fused=%s" % (
-            backend, batches, fused
-        )
+        return converted, ("eager mode (FX unavailable: %s), backend=%s, "
+                           "%d calibration batch(es), fused=%s"
+                           % (fx_reason, backend, batches, fused))
     except Exception as exc:  # noqa: BLE001
         frame = traceback.extract_tb(exc.__traceback__)[-1]
         return None, "%s: %s  [raised at %s:%d]" % (
             type(exc).__name__, exc, Path(frame.filename).name, frame.lineno
         )
 
+
+STATIC_GAP_NOTE = """
+  STATIC PTQ: MEASURED FOR TWO ARMS, NOT MEASURABLE FOR THREE.
+
+  mobilenetv3_small and resnet18 convert through FX graph mode, 100 % of
+  parameters, and are scored normally. The compression figure for those two
+  carries an accuracy cost beside it.
+
+  yolo26n, yolo26s and yolo26m compress to the same fraction and CANNOT BE
+  SCORED. Both available approaches fail, for different reasons:
+
+    eager mode  the converted graph has no QuantizedCPU kernel for
+                aten::add.out (the residual additions) or aten::silu.out
+                (the SiLU activations). Fixing that means rewriting the
+                architecture -- residual adds as nn.quantized.FloatFunctional,
+                unsupported activations wrapped in quant/dequant stubs -- in
+                three third-party models.
+
+    FX mode     symbolic tracing cannot follow the ultralytics forward:
+                "Proxy object cannot be iterated". FX is what would otherwise
+                leave unsupported operations in floating point instead of
+                failing, and it never gets that far.
+
+  So for those three the accuracy cost of static PTQ IS NOT MEASURED. It is
+  not zero, not small, not assumed -- unmeasured, with a named cause. No third
+  approach was attempted.
+"""
 
 ENVIRONMENT_NOTE = """
   THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.
@@ -362,6 +447,24 @@ HEADER = [
     "",
     "The fold is configs/arms.yaml:reporting.benchmark_fold -- fixed and",
     "pre-declared, not the best-scoring fold.",
+    "",
+    "STATIC PTQ IS MEASURED FOR TWO ARMS AND NOT MEASURABLE FOR THREE.",
+    "",
+    "mobilenetv3_small and resnet18 convert through FX graph mode at 100 % of",
+    "parameters and are scored. yolo26n, yolo26s and yolo26m compress to the",
+    "same fraction and CANNOT BE SCORED: in eager mode the converted graph has",
+    "no QuantizedCPU kernel for aten::add.out (residual additions) or",
+    "aten::silu.out (SiLU activations), and FX symbolic tracing cannot follow",
+    "the ultralytics forward (Proxy object cannot be iterated). Fixing the",
+    "first would mean rewriting three third-party architectures.",
+    "",
+    "For those three arms the accuracy cost of static PTQ IS NOT MEASURED --",
+    "not zero, not small, not assumed. macro_f1_static is empty and",
+    "static_accuracy_failure names the operation. No third approach was tried.",
+    "",
+    "coverage_pct_* is the fraction of PARAMETERS converted, computed from what",
+    "is left in floating point. Quote it beside the size: partial conversion",
+    "changes what the size number means.",
     "",
     "THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.",
     "",
@@ -446,6 +549,11 @@ def main() -> int:
 
     # The registry's own figure for the benchmark fold, for CONTEXT beside the
     # measured one. Never a baseline: see ENVIRONMENT_NOTE.
+    # The canonical class order, for naming prediction transitions. It was
+    # referenced without ever being defined, so every flip count died with
+    # NameError -- the check that verifies the deltas, lost to a missing line.
+    classes = list(data_cfg["classes"])
+
     recorded_f1 = {
         r["arm"]: r.get("f1_macro")
         for r in aggregate.cv_records()
@@ -521,10 +629,16 @@ def main() -> int:
                 continue
 
             size = state_dict_size_mb(quantised, scratch)
-            # Static PTQ returns the model inside quant/dequant stubs, so the
-            # module names are prefixed. Compare like with like or coverage
-            # reports nothing converted.
+            # Two coverage measures, because they answer different questions
+            # and one of them survives FX.
+            #
+            # `coverage()` matches module NAMES, which an FX GraphModule does
+            # not preserve, so it reports the layer-type census where it can.
+            # The parameter fraction is computed from what is LEFT in floating
+            # point and works for every path -- it is the number that qualifies
+            # the size, because partial conversion changes what the size means.
             block = coverage(module, getattr(quantised, "inner", quantised))
+            converted_pct = quantised_parameter_fraction(module, quantised)
             # TWO separate attempts. They used to share one try, so a failure
             # in the VERIFICATION discarded the MEASUREMENT: an exception while
             # counting prediction flips set f1 back to None and the row read
@@ -569,7 +683,9 @@ def main() -> int:
                 "%s_backend" % method: reason,
                 "size_mb_%s" % method: size,
                 "size_ratio_%s" % method: round(size / fp32_size, 3) if fp32_size else None,
-                "coverage_pct_%s" % method: block["params_quantised_pct"],
+                "coverage_pct_%s" % method: converted_pct,
+                "coverage_pct_by_layer_name_%s" % method:
+                    block["params_quantised_pct"],
                 "quantised_layers_%s" % method: ", ".join(
                     "%d x %s" % (n, t) for t, n in sorted(block["quantised_layer_types"].items())
                 ) or "none",
@@ -587,8 +703,8 @@ def main() -> int:
             })
             print("  %-13s %8.3f MB   ratio %5.3f   %5.1f %% of params   macro-F1 %s"
                   % (method, size, size / fp32_size if fp32_size else float("nan"),
-                     block["params_quantised_pct"] or 0.0,
-                     "%.4f" % f1 if f1 is not None else "n/a"))
+                     converted_pct or 0.0,
+                     "%.4f" % f1 if f1 is not None else "NOT MEASURED"))
             print("                %s" % (row["quantised_layers_%s" % method]))
             if flips:
                 delta = row["macro_f1_delta_%s" % method]
@@ -639,6 +755,7 @@ def main() -> int:
         print("  cost-of-quantisation claim:")
         for arm, method, reason in unscored:
             print("      %-22s %-8s %s" % (arm, method, reason))
+        print(STATIC_GAP_NOTE)
     else:
         print("\n  Every converted variant was scored. The macro-F1 deltas are")
         print("  measured, and the prediction-flip counts say how many of the")

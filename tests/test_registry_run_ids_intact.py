@@ -158,8 +158,8 @@ def test_the_recorded_extra_does_not_reproduce_the_hash(records):
 def test_the_registry_is_the_expected_size(records):
     """A tripwire: if this number changes, every count in the manuscript and in
     the tests above is describing a different registry."""
-    assert len(records) == 264, (
-        "registry holds %d records, not 264. If runs were added deliberately, "
+    assert len(records) == 269, (
+        "registry holds %d records, not 269. If runs were added deliberately, "
         "update this number and check every count that depends on it."
         % len(records)
     )
