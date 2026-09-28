@@ -118,6 +118,9 @@ artifacts/*
 !artifacts/environment_replication.csv
 # 11, what Ultralytics' own recipe consisted of, read back from the trainer
 !artifacts/native_recipe_settings.csv
+# 11, native-recipe capture v1 against v2. The v1 records were NOT deleted --
+# the capture version is hashed, so the re-run appends.
+!artifacts/native_capture_comparison.csv
 
 # 11, C1: yolo26n with the epoch budget raised 25 -> 50
 !artifacts/epoch_budget_check.csv

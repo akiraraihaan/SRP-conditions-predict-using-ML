@@ -83,6 +83,26 @@ SCRIPT = "03c_native_recipe"
 PROTOCOL = "native"
 PREPROCESSING = "ultralytics_default"
 
+# THE CAPTURE VERSION IS PART OF THE RUN'S IDENTITY.
+#
+# v1 trained and scored correctly but recorded nothing about the recipe: the
+# augmentation, schedule, optimizer and checkpoint criterion were never read
+# back off the trainer, so those five records describe their result and not
+# the thing that produced it.
+#
+# v2 captures all of it. It re-runs the same five folds, and because the marker
+# is hashed it gets its own run_id and APPENDS. The v1 records stay exactly
+# where they are.
+#
+# Deleting them was the obvious alternative and it is the wrong one: the
+# registry is append-only, and that property is worth more than a tidy table.
+# Putting the capture version in the identity costs one string and keeps both.
+#
+# If the two sets disagree, that is a between-session datapoint and belongs in
+# the record. scripts/11_recipe_check.py prints them side by side.
+CAPTURE_VERSION = 2
+RUN_ID_EXTRA = "native_recipe_v%d" % CAPTURE_VERSION
+
 # What the uniform arms use, for the column that stops this table being read as
 # an apples-to-apples preprocessing comparison.
 UNIFORM_PREPROCESSING = "letterbox_224"
@@ -366,6 +386,8 @@ def main() -> int:
     print("  epochs       : %d" % epochs)
     print("  classes      : %d" % len(classes))
     print("  protocol     : %s   preprocessing: %s" % (PROTOCOL, PREPROCESSING))
+    print("  capture      : v%d (run_id marker %r) -- v1 records are NOT touched"
+          % (CAPTURE_VERSION, RUN_ID_EXTRA))
     print("  common       : fold partition, class-index mapping, metric code")
     print("  NOT common   : preprocessing, augmentation, schedule, optimizer,")
     print("                 checkpoint-selection criterion (all reported)")
@@ -411,7 +433,7 @@ def main() -> int:
             "class_weights": "native_ultralytics_default",
             "run_seed": entry["run_seed"],
             "optimizer": None,          # theirs, not an override of ours
-            "extra": "native_recipe",
+            "extra": RUN_ID_EXTRA,
             "_entry": entry,
         }
         spec["run_id"] = registry.compute_run_id(**spec)
@@ -519,6 +541,9 @@ def main() -> int:
                     extra={
                         "protocol": PROTOCOL,
                         "preprocessing": PREPROCESSING,
+                        # Which capture generation wrote this record. v1 has no
+                        # native_recipe block; v2 does. Both are kept.
+                        "capture_version": CAPTURE_VERSION,
                         "preprocessing_note": (
                             "trained AND evaluated under ultralytics' own "
                             "transform. Evaluating this model through our "

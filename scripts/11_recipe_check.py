@@ -393,9 +393,111 @@ def epoch_budget(records, rho: float) -> tuple[pd.DataFrame, pd.DataFrame]:
 # --------------------------------------------------------------------------
 
 
+def capture_version_of(record: dict) -> int:
+    """Which generation of 03c wrote this record.
+
+    v1 recorded the result and nothing about the recipe. v2 captures the
+    augmentation, schedule, optimizer and checkpoint criterion off the trainer.
+    The version is part of the run_id, so both sets coexist and neither
+    overwrites the other.
+    """
+    extra = record.get("extra") or {}
+    if extra.get("capture_version") is not None:
+        return int(extra["capture_version"])
+    # v1 predates the field. Its marker is the bare string.
+    return 1 if extra.get("run_id_extra") == "native_recipe" else 1
+
+
+def native_capture_comparison(records, repeat: int) -> pd.DataFrame:
+    """v1 against v2, per fold. Same configuration, a later session.
+
+    If the two disagree this is another between-session datapoint and belongs
+    in the record rather than being smoothed over by quietly preferring the
+    newer one. If they agree, the recipe description v2 captured attaches to
+    numbers already reported.
+    """
+    native = [r for r in records
+              if r.get("script") == NATIVE and r.get("repeat") == repeat]
+    by_version = {}
+    for record in native:
+        by_version.setdefault(capture_version_of(record), {})[
+            record.get("fold")] = record
+
+    v1, v2 = by_version.get(1, {}), by_version.get(2, {})
+    rows = []
+    for fold in sorted(set(v1) | set(v2)):
+        first = v1.get(fold)
+        second = v2.get(fold)
+        rows.append({
+            "fold": fold,
+            "v1_f1_macro": round(first["f1_macro"], 6) if first else None,
+            "v2_f1_macro": round(second["f1_macro"], 6) if second else None,
+            "delta": (round(second["f1_macro"] - first["f1_macro"], 6)
+                      if first and second else None),
+            "v1_run_id": first.get("run_id") if first else None,
+            "v2_run_id": second.get("run_id") if second else None,
+            "recipe_captured": bool(second and (second.get("extra") or {}).get(
+                "native_recipe")),
+        })
+    return pd.DataFrame(rows)
+
+
+def print_capture_comparison(frame: pd.DataFrame) -> None:
+    if frame.empty:
+        print("  no native-recipe records at all")
+        return
+
+    def cell(value, fmt="%.6f"):
+        """None and NaN both mean absent. An all-None column stays object
+        dtype, so the NaN test alone is not enough."""
+        if value is None or value != value:
+            return "--"
+        return fmt % value
+
+    both = frame.dropna(subset=["v1_f1_macro", "v2_f1_macro"])
+    print("  %-6s %14s %14s %10s  %s"
+          % ("fold", "v1 (no recipe)", "v2 (captured)", "delta", "run_ids"))
+    for row in frame.itertuples():
+        print("  %-6s %14s %14s %10s  %s / %s"
+              % (row.fold, cell(row.v1_f1_macro), cell(row.v2_f1_macro),
+                 cell(row.delta, "%+.4f"),
+                 (row.v1_run_id or "-")[:12], (row.v2_run_id or "-")[:12]))
+
+    if both.empty:
+        missing = "v2" if frame["v2_f1_macro"].isna().all() else "v1"
+        print()
+        print("  Only the %s set exists, so there is nothing to compare yet."
+              % ("v1" if missing == "v2" else "v2"))
+        if missing == "v2":
+            print("  Run 03c again to append the captured set:")
+            print("    python scripts/03c_native_recipe.py --data-root $DATA_ROOT")
+            print("  It APPENDS -- the five v1 records are not touched.")
+        return
+
+    deltas = both["delta"].to_numpy(dtype=float)
+    identical = bool((deltas == 0).all())
+    print()
+    if identical:
+        print("  IDENTICAL on all %d fold(s). The recipe description v2 captured"
+              % len(both))
+        print("  therefore attaches to the numbers already reported -- Table 1 and")
+        print("  the manuscript do not move.")
+    else:
+        print("  THEY DIFFER: max |delta| %.4f, mean %+0.4f over %d fold(s)."
+              % (abs(deltas).max(), deltas.mean(), len(both)))
+        print()
+        print("  That is another BETWEEN-SESSION datapoint, not a correction. Both")
+        print("  sets are in the registry and neither supersedes the other. Table 1")
+        print("  reports v1, the set that was there when it was written; say which")
+        print("  in the manuscript rather than quietly preferring the newer run.")
+
+
 def native_recipe_rows(records) -> pd.DataFrame:
     """What Ultralytics actually did, from the trainer -- not from the docs."""
-    native = [r for r in records if r.get("script") == NATIVE]
+    # v2 only: v1 has no recipe to report, and mixing them would make an empty
+    # row look like a measured "no augmentation".
+    native = [r for r in records
+              if r.get("script") == NATIVE and capture_version_of(r) >= 2]
     rows = []
     for record in native:
         extra = record.get("extra") or {}
@@ -542,6 +644,22 @@ ENVIRONMENT_HEADER = [
     "one session and cannot recompute them. kind=per_fold and",
     "kind=checkpoint_sidecar rows are computed from the registry and from the",
     "checkpoint sidecars respectively.",
+]
+
+CAPTURE_HEADER = [
+    "Native-recipe capture v1 against v2, per fold.",
+    "",
+    "v1 trained and scored correctly but recorded nothing about the recipe.",
+    "v2 re-runs the same five folds and captures the augmentation, schedule,",
+    "optimizer and checkpoint criterion off the trainer.",
+    "",
+    "THE V1 RECORDS WERE NOT DELETED. The capture version is part of what 03c",
+    "hashes, so v2 gets its own run_id and APPENDS. The registry is",
+    "append-only and that property is worth more than a tidy table.",
+    "",
+    "If the two disagree, that is a BETWEEN-SESSION datapoint and neither",
+    "supersedes the other -- say which set a reported number came from. If they",
+    "agree, v2's recipe description attaches to numbers already published.",
 ]
 
 BUDGET_HEADER = [
@@ -701,6 +819,11 @@ def main() -> int:
                         print("  the deficit. Saturation is not evidence of a deficit's")
                         print("  cause; it only says the budget was reached.")
 
+    # ---- v1 against v2
+    rule("NATIVE RECIPE -- capture v1 against v2, repeat %d" % args.repeat)
+    capture = native_capture_comparison(records, args.repeat)
+    print_capture_comparison(capture)
+
     # ---- the native recipe
     rule("THE NATIVE RECIPE, read back from the trainer")
     native = native_recipe_rows(records)
@@ -718,6 +841,7 @@ def main() -> int:
         (native, "native_recipe_settings.csv", NATIVE_HEADER),
         (budget, "epoch_budget_check.csv", BUDGET_HEADER),
         (budget_epochs, "epoch_budget_selection.csv", BUDGET_HEADER),
+        (capture, "native_capture_comparison.csv", CAPTURE_HEADER),
     ):
         if not frame.empty:
             written.append(aggregate.write_csv_with_provenance(

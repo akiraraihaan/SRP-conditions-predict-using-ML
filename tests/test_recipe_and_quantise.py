@@ -649,3 +649,114 @@ def test_one_image_of_134_is_three_quarters_of_a_percent(quantise):
     after[0] = 1
     result = quantise.prediction_changes(before, after, ["a", "b"])
     assert result["pct_changed"] == 0.75
+
+
+# ============================================ capture version in the identity
+#
+# The v1 native-recipe records describe their result and nothing about the
+# recipe that produced it. Re-running to capture it must NOT overwrite them:
+# the registry is append-only and that property is worth more than a tidy
+# table. Putting the capture version in what 03c hashes costs one string and
+# keeps both sets.
+
+
+def test_the_capture_version_is_part_of_what_is_hashed(native):
+    assert native.CAPTURE_VERSION == 2
+    assert native.RUN_ID_EXTRA == "native_recipe_v2"
+
+    source = (REPO_ROOT / "scripts" / "03c_native_recipe.py").read_text(encoding="utf-8")
+    assert '"extra": RUN_ID_EXTRA,' in source, (
+        "the marker must reach the spec that is hashed, not just the record"
+    )
+
+
+def test_v2_cannot_collide_with_v1(native):
+    """Different marker, different run_id -- so the re-run appends."""
+    from srpcard import registry
+
+    base = {
+        "arm": "yolo26n", "architecture": "yolo26n-cls", "script": native.SCRIPT,
+        "split_kind": "cv", "repeat": 0, "fold": 0, "epochs": 25, "batch": 16,
+        "lr": 0.001, "class_weights": "native_ultralytics_default",
+        "run_seed": 10000, "optimizer": None,
+    }
+    v1 = registry.compute_run_id(**base, extra="native_recipe")
+    v2 = registry.compute_run_id(**base, extra=native.RUN_ID_EXTRA)
+    assert v1 != v2
+
+
+def test_a_record_reports_which_capture_wrote_it(recipe):
+    v1 = {"extra": {"run_id_extra": "native_recipe"}}
+    v2 = {"extra": {"run_id_extra": "native_recipe_v2", "capture_version": 2}}
+    assert recipe.capture_version_of(v1) == 1
+    assert recipe.capture_version_of(v2) == 2
+
+
+def test_only_v2_feeds_the_settings_table(recipe):
+    """A v1 row in that table would show empty augmentation columns, which
+    reads as a measured 'no augmentation applied' rather than as a gap."""
+    records = [
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 0,
+         "extra": {"run_id_extra": "native_recipe", "protocol": "native"}},
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 1,
+         "extra": {"run_id_extra": "native_recipe_v2", "capture_version": 2,
+                   "protocol": "native", "preprocessing": "ultralytics_default",
+                   "native_recipe": {"augmentation": {"fliplr": 0.5},
+                                     "schedule": {"lr0": 0.01},
+                                     "optimizer_used": "SGD",
+                                     "unreadable_keys": []}}},
+    ]
+    frame = recipe.native_recipe_rows(records)
+    assert len(frame) == 1
+    assert frame.iloc[0]["fold"] == 1
+    assert frame.iloc[0]["aug_fliplr"] == 0.5
+
+
+def test_the_two_captures_are_compared_per_fold(recipe):
+    records = [
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": f,
+         "run_id": "v1_%d" % f, "f1_macro": 0.60 + f / 1000,
+         "extra": {"run_id_extra": "native_recipe"}}
+        for f in range(3)
+    ] + [
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": f,
+         "run_id": "v2_%d" % f, "f1_macro": 0.60 + f / 1000,
+         "extra": {"run_id_extra": "native_recipe_v2", "capture_version": 2,
+                   "native_recipe": {}}}
+        for f in range(3)
+    ]
+    frame = recipe.native_capture_comparison(records, 0)
+
+    assert len(frame) == 3
+    assert list(frame["delta"]) == [0.0, 0.0, 0.0]
+    assert list(frame["v1_run_id"]) == ["v1_0", "v1_1", "v1_2"]
+
+
+def test_a_disagreement_is_reported_not_smoothed_over(recipe, capsys):
+    records = [
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 0,
+         "run_id": "a", "f1_macro": 0.600, "extra": {"run_id_extra": "native_recipe"}},
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 0,
+         "run_id": "b", "f1_macro": 0.615,
+         "extra": {"run_id_extra": "native_recipe_v2", "capture_version": 2}},
+    ]
+    recipe.print_capture_comparison(recipe.native_capture_comparison(records, 0))
+    out = capsys.readouterr().out
+
+    assert "THEY DIFFER" in out
+    assert "BETWEEN-SESSION" in out
+    assert "neither supersedes the other" in out
+
+
+def test_agreement_says_the_description_attaches_to_published_numbers(recipe, capsys):
+    records = [
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 0,
+         "run_id": "a", "f1_macro": 0.6, "extra": {"run_id_extra": "native_recipe"}},
+        {"script": recipe.NATIVE, "arm": "yolo26n", "repeat": 0, "fold": 0,
+         "run_id": "b", "f1_macro": 0.6,
+         "extra": {"run_id_extra": "native_recipe_v2", "capture_version": 2}},
+    ]
+    recipe.print_capture_comparison(recipe.native_capture_comparison(records, 0))
+    out = capsys.readouterr().out
+    assert "IDENTICAL" in out
+    assert "do not move" in out

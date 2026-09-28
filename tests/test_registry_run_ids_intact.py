@@ -57,7 +57,9 @@ def identity_extra_candidates(record: dict) -> list:
     if script == "03b_contrast":
         return [None]                    # 03 hashes extra as None
     if script == "03c_native_recipe":
-        return ["native_recipe"]
+        # v1 recorded no recipe; v2 does, and carries its own marker so the
+        # re-run appends instead of colliding. Both are valid history.
+        return ["native_recipe", "native_recipe_v2"]
     return [None]
 
 

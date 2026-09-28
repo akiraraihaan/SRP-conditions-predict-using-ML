@@ -71,6 +71,8 @@ COMMITTED = [
      "same configuration, different CUDA library stack"),
     ("artifacts/native_recipe_settings.csv", "11",
      "what Ultralytics' recipe actually consisted of"),
+    ("artifacts/native_capture_comparison.csv", "11",
+     "native-recipe capture v1 against v2"),
     ("artifacts/epoch_budget_check.csv", "11", "yolo26n at 50 epochs"),
     ("artifacts/epoch_budget_selection.csv", "11", "appendix C form"),
     ("artifacts/near_duplicates.csv", "09", "near-duplicate clusters"),
