@@ -1,0 +1,55 @@
+# Reproduction: exact within a session, not exact between sessions.
+#
+# Re-running a completed fold reproduces EXACTLY within a session. Two
+# --emit-weights runs of mobilenetv3_small r0f0 in one session both gave
+# 0.673445, epoch for epoch.
+#
+# A re-run in a LATER session, on the same GPU model and the same torch
+# version, differs. The same fold has been observed at 0.671546 (the
+# registry), 0.654810 and 0.673445. Between-session spread by arm:
+#
+#     mobilenetv3_small   up to 1.9e-2 macro-F1, 7.3e-2 precision_macro
+#     yolo26s             up to 1.04e-2 macro-F1
+#     resnet18            up to 6.8e-3 macro-F1
+#     yolo26n             exact
+#     yolo26m             exact
+#
+# THE CAUSE IS UNIDENTIFIED. What is known is what was held constant -- GPU
+# model, torch version, seeds, fold partition -- and that two arms are
+# unaffected while three are not, so it is not a uniform numerical shift.
+# No mechanism is named in this file, because none has been tested. Do not
+# let one be inferred from the fact that a library was reinstalled at some
+# point: that is a coincidence in time, not evidence.
+#
+# WHAT FOLLOWS FOR THE MANUSCRIPT: a result quoted to more precision than
+# the between-session spread is not reproducible at that precision. Quote
+# the 15-fold mean. A single fold is not reproducible to three decimals, and
+# neither is a between-arm difference smaller than the spread above.
+#
+# kind=between_session rows are OBSERVED and reported -- this script runs in
+# one session and cannot recompute them. kind=per_fold and
+# kind=checkpoint_sidecar rows are computed from the registry and from the
+# checkpoint sidecars respectively.
+#
+# built from 264 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
+# scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
+# corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
+# registry sha1: f54363b409c11652
+# generated: 2026-09-28T03:24:28+00:00
+kind,arm,within_session,f1_macro_spread,precision_macro_spread,reproduces_exactly,cause,held_constant,source,repeat,fold,published,rerun,delta
+between_session,mobilenetv3_small,exact,0.019,0.073,False,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
+between_session,resnet18,exact,0.0068,,False,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
+between_session,yolo26m,exact,0.0,,True,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
+between_session,yolo26n,exact,0.0,,True,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
+between_session,yolo26s,exact,0.0104,,False,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
+per_fold,mobilenetv3_small,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,0.0,0.671546,0.65481,-0.016736
+per_fold,mobilenetv3_small,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,1.0,0.60977,0.530486,-0.079284
+per_fold,mobilenetv3_small,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,2.0,0.558935,0.599368,0.040433
+per_fold,mobilenetv3_small,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,3.0,0.651321,0.505287,-0.146035
+per_fold,mobilenetv3_small,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,4.0,0.414627,0.56161,0.146983
+per_fold,yolo26n,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,0.0,0.572968,0.572968,0.0
+per_fold,yolo26n,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,1.0,0.391518,0.391518,0.0
+per_fold,yolo26n,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,2.0,0.545736,0.545736,0.0
+per_fold,yolo26n,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,3.0,0.56464,0.56464,0.0
+per_fold,yolo26n,,,,,unidentified,,registry: 03_run_cv vs 03b_contrast,0.0,4.0,0.541523,0.541523,0.0
