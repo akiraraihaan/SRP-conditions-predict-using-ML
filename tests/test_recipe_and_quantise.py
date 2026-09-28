@@ -373,7 +373,10 @@ def test_there_is_no_optimizer_axis_any_more(recipe):
     """The 2x2 is gone. MuSGD was SGD, so crossing architecture against
     optimizer crossed one thing with itself."""
     assert not hasattr(recipe, "CELLS"), "the 2x2 must not come back"
-    assert len(recipe.ROWS) == 3
+    # three reported rows plus the v1 native replicate, which is carried but
+    # marked not reported
+    assert len(recipe.ROWS) == 4
+    assert sum(1 for r in recipe.ROWS if r["reported"]) == 3
     assert {r["optimizer"] for r in recipe.ROWS} == {"SGD", "theirs"}
 
 
@@ -383,7 +386,7 @@ def test_table_1_states_both_halves_or_neither(recipe):
     full = pd.DataFrame([
         {"row": "yolo26n / uniform", "f1_macro_mean": 0.5233},
         {"row": "mobilenetv3_small / uniform", "f1_macro_mean": 0.5812},
-        {"row": "yolo26n / native recipe", "f1_macro_mean": 0.5787},
+        {"row": recipe.NATIVE_ROW, "f1_macro_mean": 0.5787},
     ])
     lines = " ".join(recipe.recipe_conclusion(full))
     assert "+0.0579" in lines, "the architecture gap under a common recipe"
@@ -397,11 +400,11 @@ def test_a_missing_row_refuses_to_conclude(recipe):
     partial = pd.DataFrame([
         {"row": "yolo26n / uniform", "f1_macro_mean": 0.5233},
         {"row": "mobilenetv3_small / uniform", "f1_macro_mean": 0.5812},
-        {"row": "yolo26n / native recipe", "f1_macro_mean": None},
+        {"row": recipe.NATIVE_ROW, "f1_macro_mean": None},
     ])
     lines = " ".join(recipe.recipe_conclusion(partial))
     assert "INCOMPLETE" in lines
-    assert "yolo26n / native recipe" in lines
+    assert recipe.NATIVE_ROW in lines
 
 
 def test_reproduction_is_exact_within_a_session(recipe):
@@ -760,3 +763,119 @@ def test_agreement_says_the_description_attaches_to_published_numbers(recipe, ca
     out = capsys.readouterr().out
     assert "IDENTICAL" in out
     assert "do not move" in out
+
+
+# ==================================== the table and its footnote must agree
+
+
+def _native(fold, f1, capture, run_id=None):
+    extra = {"run_id_extra": "native_recipe" if capture == 1 else "native_recipe_v2",
+             "protocol": "native", "preprocessing": "ultralytics_default"}
+    if capture >= 2:
+        extra["capture_version"] = capture
+    return {"script": "03c_native_recipe", "arm": "yolo26n", "repeat": 0,
+            "fold": fold, "f1_macro": f1, "epochs": 25,
+            "run_id": run_id or "%s_%d" % (capture, fold), "extra": extra}
+
+
+def _uniform(arm, fold, f1):
+    return {"script": "03_run_cv", "arm": arm, "repeat": 0, "fold": fold,
+            "f1_macro": f1, "epochs": 25, "run_id": "%s_%d" % (arm, fold),
+            "extra": {"protocol": "uniform"}}
+
+
+def _both_captures():
+    v1 = [0.635422, 0.493089, 0.607743, 0.572695, 0.584331]
+    v2 = [0.664768, 0.540807, 0.632015, 0.590258, 0.610108]
+    yolo = [0.572968, 0.391518, 0.545736, 0.564640, 0.541523]
+    mobile = [0.671546, 0.609770, 0.558935, 0.651321, 0.414627]
+    records = []
+    for fold in range(5):
+        records.append(_native(fold, v1[fold], 1))
+        records.append(_native(fold, v2[fold], 2))
+        records.append(_uniform("yolo26n", fold, yolo[fold]))
+        records.append(_uniform("mobilenetv3_small", fold, mobile[fold]))
+    return records
+
+
+def test_two_captures_no_longer_collapse_silently(recipe):
+    """fold_series keyed on fold, so with both captures present the later
+    record won and Table 1 reported v2 while its footnote said v1."""
+    with pytest.raises(SystemExit) as caught:
+        recipe.fold_series(_both_captures(), "yolo26n", recipe.NATIVE, 0)
+    assert "no way to choose between them" in str(caught.value)
+
+
+def test_asking_for_a_capture_resolves_it(recipe):
+    v1 = recipe.fold_series(_both_captures(), "yolo26n", recipe.NATIVE, 0, capture=1)
+    v2 = recipe.fold_series(_both_captures(), "yolo26n", recipe.NATIVE, 0, capture=2)
+    assert v1[0] == 0.635422
+    assert v2[0] == 0.664768
+
+
+def test_the_table_carries_the_capture_version(recipe):
+    frame = recipe.recipe_table(_both_captures(), 0, 0.25)
+    native = frame[frame["row"] == recipe.NATIVE_ROW].iloc[0]
+    replicate = frame[frame["row"] == recipe.NATIVE_REPLICATE_ROW].iloc[0]
+
+    assert native["capture_version"] == 2
+    assert bool(native["reported"]) is True
+    assert replicate["capture_version"] == 1
+    assert bool(replicate["reported"]) is False
+    assert "capture_version" in frame.columns
+
+
+def test_the_reported_native_mean_is_v2(recipe):
+    """v1 puts the native row BELOW mobilenet by 0.0025; v2 puts it ABOVE by
+    0.0264. Those are different sentences, so which one is reported cannot be
+    an accident of dict ordering."""
+    frame = recipe.recipe_table(_both_captures(), 0, 0.25)
+    native = frame[frame["row"] == recipe.NATIVE_ROW].iloc[0]
+    mobile = frame[frame["row"] == "mobilenetv3_small / uniform"].iloc[0]
+
+    assert native["f1_macro_mean"] == pytest.approx(0.6076, abs=1e-4)
+    assert native["f1_macro_mean"] - mobile["f1_macro_mean"] == pytest.approx(
+        0.0264, abs=1e-4)
+
+
+def test_the_conclusion_names_the_capture_it_used(recipe):
+    frame = recipe.recipe_table(_both_captures(), 0, 0.25)
+    lines = " ".join(recipe.recipe_conclusion(frame))
+
+    assert "CAPTURE v2" in lines
+    assert "NOT REPORTED" in lines
+    assert "+0.0843" in lines          # native against its own uniform run
+    assert "+0.0264" in lines          # native against mobilenet
+
+
+def test_the_conclusion_names_all_five_axes(recipe):
+    """+0.0843 is not an augmentation effect and must not be read as one."""
+    frame = recipe.recipe_table(_both_captures(), 0, 0.25)
+    lines = " ".join(recipe.recipe_conclusion(frame))
+
+    assert "FIVE AXES" in lines
+    for axis in ("preprocessing", "augmentation", "optimizer", "schedule",
+                 "checkpoint"):
+        assert axis in lines
+    assert "AdamW" in lines and "top-1 accuracy" in lines
+    assert "NOT measured here" in lines
+
+
+def test_the_footnote_agrees_with_the_table(recipe, capsys):
+    """The bug: the table showed v2 and the note said v1."""
+    recipe.print_capture_comparison(
+        recipe.native_capture_comparison(_both_captures(), 0))
+    out = capsys.readouterr().out
+
+    assert "TABLE 1 REPORTS v2" in out
+    assert "reports v1" not in out
+    assert "neither supersedes the other" in out
+
+
+def test_the_spread_is_set_against_the_effect(recipe):
+    """A +0.0843 effect beside a 0.0289 between-session spread is a direction,
+    not a third decimal."""
+    frame = recipe.recipe_table(_both_captures(), 0, 0.25)
+    lines = " ".join(recipe.recipe_conclusion(frame))
+    assert "between-session spread" in lines
+    assert "quote the direction" in lines

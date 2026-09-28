@@ -67,17 +67,49 @@ THEIRS = "ultralytics fitness (top-1/top-5 accuracy)"
 # Table 1. The reference row is named once so the whole table orients on it.
 REFERENCE_ROW = "yolo26n / uniform"
 
+# WHICH NATIVE CAPTURE TABLE 1 REPORTS, stated once and printed in a column.
+#
+# Both exist in the registry and they differ. v2 is reported because it is the
+# run whose recipe was actually captured, and therefore the only one that can
+# be DESCRIBED in a methods section. v1 appears beside it as a between-session
+# replicate, labelled as not reported.
+#
+# This constant exists because the two were being conflated: `fold_series`
+# keyed on fold, so with both captures present the later record silently won
+# and the table reported v2 while the note under it claimed v1. The difference
+# is not cosmetic -- v1 puts the native row 0.0025 BELOW mobilenetv3_small and
+# v2 puts it 0.0264 ABOVE, which are different sentences.
+REPORTED_NATIVE_CAPTURE = 2
+
 ROWS = [
     {"row": REFERENCE_ROW, "arm": "yolo26n", "script": PUBLISHED,
      "protocol": "uniform", "preprocessing": LETTERBOX, "optimizer": "SGD",
-     "selection": OURS},
+     "selection": OURS, "capture": None, "reported": True},
     {"row": "mobilenetv3_small / uniform", "arm": "mobilenetv3_small",
      "script": PUBLISHED, "protocol": "uniform", "preprocessing": LETTERBOX,
-     "optimizer": "SGD", "selection": OURS},
-    {"row": "yolo26n / native recipe", "arm": "yolo26n", "script": NATIVE,
+     "optimizer": "SGD", "selection": OURS, "capture": None, "reported": True},
+    {"row": "yolo26n / native recipe (v%d)" % REPORTED_NATIVE_CAPTURE,
+     "arm": "yolo26n", "script": NATIVE,
      "protocol": "native", "preprocessing": ULTRALYTICS, "optimizer": "theirs",
-     "selection": THEIRS},
+     "selection": THEIRS, "capture": REPORTED_NATIVE_CAPTURE, "reported": True},
+    {"row": "yolo26n / native recipe (v1, replicate)", "arm": "yolo26n",
+     "script": NATIVE, "protocol": "native", "preprocessing": ULTRALYTICS,
+     "optimizer": "theirs", "selection": THEIRS, "capture": 1,
+     "reported": False},
 ]
+
+NATIVE_ROW = "yolo26n / native recipe (v%d)" % REPORTED_NATIVE_CAPTURE
+NATIVE_REPLICATE_ROW = "yolo26n / native recipe (v1, replicate)"
+
+# The native row is not one variable changed. Naming them stops a reader
+# attributing the whole difference to augmentation.
+NATIVE_AXES = (
+    "preprocessing      ultralytics resize/crop, not our letterbox_224",
+    "augmentation       theirs, at their strengths; ours applies none",
+    "optimizer          theirs resolves `auto` -> AdamW; ours is SGD",
+    "schedule           their warmup, their decay, their lr0",
+    "checkpoint         their fitness (top-1 accuracy); ours is val macro-F1",
+)
 
 # WHAT REPRODUCTION ACTUALLY LOOKS LIKE, observed across sessions.
 #
@@ -119,14 +151,47 @@ def _override_of(record: dict) -> str | None:
     return str(value).lower() if value else None
 
 
-def fold_series(records, arm, script, repeat, metric="f1_macro"):
-    return {
-        int(r["fold"]): float(r[metric])
-        for r in records
-        if r.get("script") == script and r.get("arm") == arm
-        and r.get("repeat") == repeat and r.get(metric) is not None
-        and r.get("fold") is not None
-    }
+def capture_version_of(record: dict) -> int:
+    """Which generation of 03c wrote this record.
+
+    v1 recorded the result and nothing about the recipe. v2 captures the
+    augmentation, schedule, optimizer and checkpoint criterion off the trainer.
+    The version is part of the run_id, so both sets coexist and neither
+    overwrites the other.
+    """
+    extra = record.get("extra") or {}
+    if extra.get("capture_version") is not None:
+        return int(extra["capture_version"])
+    # v1 predates the field. Its marker is the bare string.
+    return 1 if extra.get("run_id_extra") == "native_recipe" else 1
+
+
+def fold_series(records, arm, script, repeat, metric="f1_macro", capture=None):
+    """{fold: value}, REFUSING to collapse two records onto one fold.
+
+    This used to be a dict comprehension keyed on fold. With both native
+    captures in the registry that silently kept whichever came last, so Table 1
+    reported v2 while the note beneath it said v1. Ambiguity now raises instead
+    of picking.
+    """
+    series: dict[int, float] = {}
+    for record in records:
+        if (record.get("script") != script or record.get("arm") != arm
+                or record.get("repeat") != repeat
+                or record.get(metric) is None or record.get("fold") is None):
+            continue
+        if capture is not None and capture_version_of(record) != capture:
+            continue
+        fold = int(record["fold"])
+        if fold in series:
+            raise SystemExit(
+                "Two records for %s %s r%df%d and no way to choose between "
+                "them.\n  Pass `capture=` to disambiguate. Silently keeping one "
+                "is how a table\n  came to disagree with its own footnote."
+                % (script, arm, repeat, fold)
+            )
+        series[fold] = float(record[metric])
+    return series
 
 
 # --------------------------------------------------------------------------
@@ -135,8 +200,11 @@ def fold_series(records, arm, script, repeat, metric="f1_macro"):
 
 
 def recipe_table(records, repeat: int, rho: float) -> pd.DataFrame:
-    series = {row["row"]: fold_series(records, row["arm"], row["script"], repeat)
-              for row in ROWS}
+    series = {
+        row["row"]: fold_series(records, row["arm"], row["script"], repeat,
+                                capture=row.get("capture"))
+        for row in ROWS
+    }
     reference = series.get(REFERENCE_ROW) or {}
 
     out = []
@@ -145,9 +213,13 @@ def recipe_table(records, repeat: int, rho: float) -> pd.DataFrame:
         block = dict(row)
         native = [r for r in records
                   if r.get("script") == row["script"] and r.get("arm") == row["arm"]
-                  and r.get("repeat") == repeat]
+                  and r.get("repeat") == repeat
+                  and (row.get("capture") is None
+                       or capture_version_of(r) == row["capture"])]
         block.update({
             "repeat": repeat,
+            "capture_version": row.get("capture"),
+            "reported": row.get("reported", True),
             "epochs": native[0].get("epochs") if native else None,
             "n_folds": len(values),
             "f1_macro_mean": float(np.mean(list(values.values()))) if values else None,
@@ -186,12 +258,13 @@ def recipe_conclusion(frame: pd.DataFrame) -> list[str]:
 
     yolo = mean_of(REFERENCE_ROW)
     mobile = mean_of("mobilenetv3_small / uniform")
-    native = mean_of("yolo26n / native recipe")
+    native = mean_of(NATIVE_ROW)
+    replicate = mean_of(NATIVE_REPLICATE_ROW)
 
     if None in (yolo, mobile, native):
         missing = [name for name, value in
                    ((REFERENCE_ROW, yolo), ("mobilenetv3_small / uniform", mobile),
-                    ("yolo26n / native recipe", native)) if value is None]
+                    (NATIVE_ROW, native)) if value is None]
         return [
             "INCOMPLETE -- cannot state the conclusion. Missing: %s"
             % ", ".join(missing),
@@ -200,21 +273,52 @@ def recipe_conclusion(frame: pd.DataFrame) -> list[str]:
             "  alone is the thing this table exists to prevent.",
         ]
 
-    return [
-        "UNDER A COMMON RECIPE the architecture gap is %+.4f in mobilenet's" % (mobile - yolo),
-        "favour (%.4f against %.4f), and yolo26n recovers %+.4f of it when given"
-        % (mobile, yolo, native - yolo),
-        "its own recipe (%.4f), landing %+.4f from mobilenet." % (native, native - mobile),
-        "",
-        "  STATE BOTH. 'YOLO26 loses under a common protocol' and 'most of that",
-        "  gap is the protocol, not the architecture' are both true, and either",
-        "  on its own misrepresents the result.",
-        "",
-        "  The third row is NOT one variable changed: its preprocessing,",
-        "  augmentation, schedule, optimizer and checkpoint criterion are all",
-        "  Ultralytics'. It is 'their recipe end to end', and the preprocessing",
-        "  column says so.",
+    lines = [
+        "THE NATIVE ROW IS CAPTURE v%d." % REPORTED_NATIVE_CAPTURE,
+        "  It is the run whose recipe was actually captured, and therefore the",
+        "  only one that can be described in a methods section.",
     ]
+    if replicate is not None:
+        lines += [
+            "  v1 ran the same configuration in an earlier session and scored",
+            "  %.4f against v2's %.4f, a between-session difference of %+0.4f."
+            % (replicate, native, native - replicate),
+            "  It is in the table, marked NOT REPORTED. Neither supersedes the",
+            "  other; this states which one the numbers below use.",
+        ]
+    lines += [
+        "",
+        "UNDER A COMMON RECIPE the architecture gap is %+.4f in mobilenet's"
+        % (mobile - yolo),
+        "favour (%.4f against %.4f). Given its OWN recipe yolo26n scores %.4f,"
+        % (mobile, yolo, native),
+        "which is %+.4f on its uniform self and %+.4f against mobilenet."
+        % (native - yolo, native - mobile),
+        "",
+        "  STATE BOTH. 'YOLO26 loses under a common protocol' and 'that gap is",
+        "  the protocol, not the architecture' are both true, and either on its",
+        "  own misrepresents the result.",
+        "",
+        "  THE NATIVE ROW DIFFERS ON FIVE AXES AT ONCE. %+.4f is not an"
+        % (native - yolo),
+        "  augmentation effect, and must not be reported as one:",
+    ]
+    for axis in NATIVE_AXES:
+        lines.append("      %s" % axis)
+    lines += [
+        "",
+        "  It is 'their recipe end to end'. Which of the five carries the",
+        "  difference is NOT measured here and would need one run per axis.",
+    ]
+    if replicate is not None:
+        span = abs(native - replicate)
+        lines += [
+            "",
+            "  And note the between-session spread on this arm is %.4f, against" % span,
+            "  a %+0.4f effect -- so quote the direction, not the third decimal."
+            % (native - yolo),
+        ]
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -393,21 +497,6 @@ def epoch_budget(records, rho: float) -> tuple[pd.DataFrame, pd.DataFrame]:
 # --------------------------------------------------------------------------
 
 
-def capture_version_of(record: dict) -> int:
-    """Which generation of 03c wrote this record.
-
-    v1 recorded the result and nothing about the recipe. v2 captures the
-    augmentation, schedule, optimizer and checkpoint criterion off the trainer.
-    The version is part of the run_id, so both sets coexist and neither
-    overwrites the other.
-    """
-    extra = record.get("extra") or {}
-    if extra.get("capture_version") is not None:
-        return int(extra["capture_version"])
-    # v1 predates the field. Its marker is the bare string.
-    return 1 if extra.get("run_id_extra") == "native_recipe" else 1
-
-
 def native_capture_comparison(records, repeat: int) -> pd.DataFrame:
     """v1 against v2, per fold. Same configuration, a later session.
 
@@ -487,9 +576,13 @@ def print_capture_comparison(frame: pd.DataFrame) -> None:
               % (abs(deltas).max(), deltas.mean(), len(both)))
         print()
         print("  That is another BETWEEN-SESSION datapoint, not a correction. Both")
-        print("  sets are in the registry and neither supersedes the other. Table 1")
-        print("  reports v1, the set that was there when it was written; say which")
-        print("  in the manuscript rather than quietly preferring the newer run.")
+        print("  sets are in the registry and neither supersedes the other.")
+        print()
+        print("  TABLE 1 REPORTS v%d, and says so in its capture column."
+              % REPORTED_NATIVE_CAPTURE)
+        print("  Not because it is newer or better, but because it is the run whose")
+        print("  recipe was captured and therefore the only one that can be")
+        print("  described. v1 appears there too, marked NOT REPORTED.")
 
 
 def native_recipe_rows(records) -> pd.DataFrame:
@@ -608,6 +701,19 @@ RECIPE_HEADER = [
     "that gap when given its own recipe. State both. Either alone misrepresents",
     "it.",
     "",
+    "WHICH NATIVE CAPTURE: the capture_version column says so, and the `reported`",
+    "column says which rows the conclusion uses. Two captures of the native run",
+    "exist -- v1 recorded no recipe, v2 does -- and they DIFFER. v2 is reported",
+    "because it is the only one that can be described in a methods section; v1 is",
+    "carried beside it as a between-session replicate, marked not reported.",
+    "Neither supersedes the other.",
+    "",
+    "THE NATIVE ROW DIFFERS FROM THE UNIFORM ROWS ON FIVE AXES AT ONCE:",
+    "preprocessing, augmentation, optimizer (their `auto` resolves to AdamW, not",
+    "SGD), schedule, and checkpoint criterion (top-1 accuracy, not macro-F1). Its",
+    "difference is NOT an augmentation effect and must not be reported as one.",
+    "Which axis carries it is not measured here and would need one run per axis.",
+    "",
     "Intervals carry the Nadeau-Bengio correction; these are overlapping folds.",
 ]
 
@@ -717,16 +823,16 @@ def main() -> int:
     # ---- Table 1
     rule("TABLE 1 -- recipe, repeat %d" % args.repeat)
     recipe = recipe_table(records, args.repeat, rho)
-    print("  %-30s %-10s %-20s %-8s %6s %10s %12s"
-          % ("row", "protocol", "preprocessing", "optim", "folds", "macro-F1",
-             "vs yolo/unif"))
+    print("  %-40s %-9s %-20s %5s %9s %13s  %s"
+          % ("row", "protocol", "preprocessing", "folds", "macro-F1",
+             "vs yolo/unif", "reported"))
     for row in recipe.itertuples():
         delta = getattr(row, "vs_reference_mean", None)
-        print("  %-30s %-10s %-20s %-8s %6d %10s %12s"
-              % (row.row, row.protocol, row.preprocessing, row.optimizer,
-                 row.n_folds,
+        print("  %-40s %-9s %-20s %5d %9s %13s  %s"
+              % (row.row, row.protocol, row.preprocessing, row.n_folds,
                  "%.4f" % row.f1_macro_mean if row.f1_macro_mean == row.f1_macro_mean else "--",
-                 "%+.4f" % delta if delta is not None and delta == delta else "--"))
+                 "%+.4f" % delta if delta is not None and delta == delta else "--",
+                 "yes" if row.reported else "NO -- replicate"))
     print()
     for line in recipe_conclusion(recipe):
         print("  " + line)
