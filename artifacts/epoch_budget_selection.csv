@@ -12,12 +12,12 @@
 # >= 96 % -- that is a different finding from '25 was simply too few', and the
 # manuscript needs to say which.
 #
-# built from 264 registry record(s)
+# built from 269 registry record(s)
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
 # scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
 # corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
-# registry sha1: f54363b409c11652
-# generated: 2026-09-24T03:38:46+00:00
+# registry sha1: 7fea41ac63acd8c7
+# generated: 2026-09-28T03:37:11+00:00
 arm,protocol,epoch_budget,n_folds,mean_fraction_of_budget,median_fraction_of_budget,folds_at_or_above_96pct
 yolo26n,uniform,25,15,0.7973,0.96,9
 yolo26n_ep50,uniform,50,15,0.584,0.56,4

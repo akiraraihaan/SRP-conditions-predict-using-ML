@@ -1,0 +1,24 @@
+# What Ultralytics' own recipe actually consisted of, READ BACK FROM THE
+# TRAINER that ran -- never quoted from documentation.
+#
+# ultralytics resolves `optimizer: auto` and several augmentation strengths
+# at runtime, so the documented defaults are not necessarily the values that
+# were in force. optimizer_used is the class of the optimizer OBJECT, which
+# is the distinction that hid MuSGD == SGD in our own loop for weeks.
+#
+# Anything that could not be read from the trainer is listed by name in
+# unreadable_keys and left empty. A default that was not in force would read
+# as a measurement.
+#
+# built from 269 registry record(s)
+# arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
+# scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
+# corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
+# registry sha1: 7fea41ac63acd8c7
+# generated: 2026-09-28T03:37:11+00:00
+arm,repeat,fold,protocol,preprocessing,optimizer_requested,optimizer_used,epochs_run,selected_epoch,selection_criterion,unreadable_keys,aug_hsv_h,aug_hsv_s,aug_hsv_v,aug_degrees,aug_translate,aug_scale,aug_shear,aug_perspective,aug_flipud,aug_fliplr,aug_bgr,aug_mosaic,aug_mixup,aug_cutmix,aug_copy_paste,aug_auto_augment,aug_erasing,sched_optimizer,sched_lr0,sched_lrf,sched_momentum,sched_weight_decay,sched_warmup_epochs,sched_warmup_momentum,sched_warmup_bias_lr,sched_cos_lr,sched_epochs,sched_batch,sched_imgsz,sched_patience,sched_amp,sched_seed,sched_single_cls,sched_dropout
+yolo26n,0,0,native,ultralytics_default,auto,AdamW,25,16,ultralytics fitness (top-1/top-5 accuracy),"augmentation.crop_fraction, schedule.label_smoothing",0.015,0.7,0.4,0.0,0.1,0.5,0.0,0.0,0.0,0.5,0.0,1.0,0.0,0.0,0.0,randaugment,0.4,auto,0.01,0.01,0.937,0.0005,3.0,0.8,0.0,False,25,16,224,100,True,10000,False,0.0
+yolo26n,0,1,native,ultralytics_default,auto,AdamW,25,11,ultralytics fitness (top-1/top-5 accuracy),"augmentation.crop_fraction, schedule.label_smoothing",0.015,0.7,0.4,0.0,0.1,0.5,0.0,0.0,0.0,0.5,0.0,1.0,0.0,0.0,0.0,randaugment,0.4,auto,0.01,0.01,0.937,0.0005,3.0,0.8,0.0,False,25,16,224,100,True,10001,False,0.0
+yolo26n,0,2,native,ultralytics_default,auto,AdamW,25,22,ultralytics fitness (top-1/top-5 accuracy),"augmentation.crop_fraction, schedule.label_smoothing",0.015,0.7,0.4,0.0,0.1,0.5,0.0,0.0,0.0,0.5,0.0,1.0,0.0,0.0,0.0,randaugment,0.4,auto,0.01,0.01,0.937,0.0005,3.0,0.8,0.0,False,25,16,224,100,True,10002,False,0.0
+yolo26n,0,3,native,ultralytics_default,auto,AdamW,25,8,ultralytics fitness (top-1/top-5 accuracy),"augmentation.crop_fraction, schedule.label_smoothing",0.015,0.7,0.4,0.0,0.1,0.5,0.0,0.0,0.0,0.5,0.0,1.0,0.0,0.0,0.0,randaugment,0.4,auto,0.01,0.01,0.937,0.0005,3.0,0.8,0.0,False,25,16,224,100,True,10003,False,0.0
+yolo26n,0,4,native,ultralytics_default,auto,AdamW,25,19,ultralytics fitness (top-1/top-5 accuracy),"augmentation.crop_fraction, schedule.label_smoothing",0.015,0.7,0.4,0.0,0.1,0.5,0.0,0.0,0.0,0.5,0.0,1.0,0.0,0.0,0.0,randaugment,0.4,auto,0.01,0.01,0.937,0.0005,3.0,0.8,0.0,False,25,16,224,100,True,10004,False,0.0

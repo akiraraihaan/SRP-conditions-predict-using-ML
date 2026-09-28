@@ -12,15 +12,15 @@
 # supersedes the other -- say which set a reported number came from. If they
 # agree, v2's recipe description attaches to numbers already published.
 #
-# built from 264 registry record(s)
+# built from 269 registry record(s)
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
 # scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
 # corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
-# registry sha1: f54363b409c11652
-# generated: 2026-09-28T03:24:28+00:00
+# registry sha1: 7fea41ac63acd8c7
+# generated: 2026-09-28T03:37:11+00:00
 fold,v1_f1_macro,v2_f1_macro,delta,v1_run_id,v2_run_id,recipe_captured
-0,0.635422,,,acd43f07581819e7,,False
-1,0.493089,,,5296ef8d047a8d67,,False
-2,0.607743,,,2478e8d12410f72c,,False
-3,0.572695,,,913c88442f374dd9,,False
-4,0.584331,,,668e5d4f1b10aa79,,False
+0,0.635422,0.664768,0.029346,acd43f07581819e7,c1a8f8b2db5d7332,True
+1,0.493089,0.540807,0.047718,5296ef8d047a8d67,1fe29efd0f8a5160,True
+2,0.607743,0.632015,0.024271,2478e8d12410f72c,c6a88d7b21f7bf75,True
+3,0.572695,0.590258,0.017563,913c88442f374dd9,6ea6434c21341579,True
+4,0.584331,0.610108,0.025778,668e5d4f1b10aa79,7b4d44f5fb545765,True

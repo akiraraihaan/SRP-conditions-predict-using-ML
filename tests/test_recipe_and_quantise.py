@@ -879,3 +879,87 @@ def test_the_spread_is_set_against_the_effect(recipe):
     lines = " ".join(recipe.recipe_conclusion(frame))
     assert "between-session spread" in lines
     assert "quote the direction" in lines
+
+
+# =============================== every converted variant must be SCORED
+#
+# Static PTQ started working and every quantised row went to "n/a" -- dynamic
+# too, which had scored before. Three causes, and only the first was guessed:
+#
+#   * predict_logits defaults to next(module.parameters()).device, and a
+#     statically quantised module has NO parameters left to ask -- they are
+#     packed into buffers. That raises StopIteration.
+#   * eager quantised kernels are CPU-only regardless.
+#   * one try wrapped BOTH the macro-F1 and the flip count, so a failure in the
+#     verification discarded the measurement.
+#
+# Size alone cannot answer the microcontroller question. "3.2x smaller" needs
+# "at a cost of X macro-F1", and X is what these tests protect.
+
+
+def test_a_statically_quantised_model_has_no_parameters_to_infer_from(quantise):
+    """The root cause, stated as a fact about torch rather than a guess."""
+    pytest.importorskip("torch")
+
+    converted, reason = quantise.static_ptq(_toy_model().eval(), _ToyCache(),
+                                            list(range(16)),
+                                            {i: i % 4 for i in range(16)})
+    assert converted is not None, reason
+    with pytest.raises(StopIteration):
+        next(converted.parameters())
+
+
+def test_both_variants_score_with_the_device_pinned(quantise):
+    """The fix, end to end: dynamic AND static produce a macro-F1."""
+    pytest.importorskip("torch")
+
+    model = _toy_model().eval()
+    idxs = list(range(32))
+    labels = {i: i % 4 for i in idxs}
+    cfg = {"classes": ["a", "b", "c", "d"]}
+
+    for name, converted in (
+        ("dynamic", quantise.dynamic_ptq(model)[0]),
+        ("static", quantise.static_ptq(model, _ToyCache(), idxs, labels)[0]),
+    ):
+        assert converted is not None, name
+        result = quantise.macro_f1(converted, _ToyCache(), idxs, labels, cfg,
+                                   device=quantise.QUANTISED_DEVICE)
+        assert result["f1_macro"] is not None, name
+        assert 0.0 <= result["f1_macro"] <= 1.0
+
+
+def test_the_device_is_pinned_not_inferred(quantise):
+    assert quantise.QUANTISED_DEVICE == "cpu"
+
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert "device=QUANTISED_DEVICE" in source
+    # the fp32 baseline must be scored on the same device, or the delta
+    # between them carries a device difference
+    assert "module = module.to(QUANTISED_DEVICE)" in source
+
+
+def test_a_flip_count_failure_does_not_discard_the_macro_f1(quantise):
+    """They shared one try. An exception while counting flips set f1 back to
+    None and the row read n/a as though the model could not be scored."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert "_flipcount_failure" in source
+    assert "macro-F1 above" in source
+    # the flip attempt is guarded by the score having succeeded
+    assert "if f1 is not None:" in source
+
+
+def test_an_unscored_row_is_reported_loudly(quantise):
+    """A size with no accuracy cannot support a cost-of-quantisation claim,
+    and must not be left as a quiet n/a in a column."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert "SCORING FAILED" in source
+    assert "ROWS WITH A SIZE BUT NO ACCURACY" in source
+    assert "cannot support a" in source
+
+
+def test_prediction_vector_accepts_a_device(quantise):
+    import inspect
+
+    assert "device" in inspect.signature(quantise.prediction_vector).parameters
+    assert "device" in inspect.signature(quantise.macro_f1).parameters

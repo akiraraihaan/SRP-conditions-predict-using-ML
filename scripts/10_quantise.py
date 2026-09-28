@@ -134,7 +134,15 @@ def coverage(fp32, quantised) -> dict:
     }
 
 
-def prediction_vector(module, cache, indices, labels_by_idx):
+# Eager-mode quantised kernels are CPU-only, and a quantised module may have
+# NO parameters left to infer a device from -- static PTQ packs them into
+# buffers, so `next(module.parameters())` raises StopIteration. The evaluation
+# helper defaults to exactly that inference, which is why every quantised row
+# came back "n/a" while the fp32 row scored fine.
+QUANTISED_DEVICE = "cpu"
+
+
+def prediction_vector(module, cache, indices, labels_by_idx, device=None):
     """The predicted class per image, in the order `indices` was given.
 
     Metrics are a summary; this is the thing itself. A macro-F1 delta with no
@@ -144,7 +152,9 @@ def prediction_vector(module, cache, indices, labels_by_idx):
     """
     from srpcard import evaluate
 
-    _, _, logits = evaluate.predict_logits(module, cache, indices, labels_by_idx)
+    _, _, logits = evaluate.predict_logits(
+        module, cache, indices, labels_by_idx, device=device
+    )
     return np.asarray(logits).argmax(axis=1)
 
 
@@ -172,10 +182,12 @@ def prediction_changes(before, after, classes: list[str]) -> dict:
     }
 
 
-def macro_f1(module, cache, indices, labels_by_idx, data_cfg) -> dict:
+def macro_f1(module, cache, indices, labels_by_idx, data_cfg, device=None) -> dict:
     from srpcard import evaluate
 
-    return evaluate.evaluate_fold(module, cache, indices, labels_by_idx, data_cfg)
+    return evaluate.evaluate_fold(
+        module, cache, indices, labels_by_idx, data_cfg, device=device
+    )
 
 
 # --------------------------------------------------------------------------
@@ -456,8 +468,13 @@ def main() -> int:
         # MEASURED HERE, from the checkpoint that was handed to this script. The
         # registry's value is shown beside it for context and is NEVER used as
         # the baseline: see the note below.
-        fp32_metrics = macro_f1(module, cache, test_idx, labels_by_idx, data_cfg)
-        fp32_predictions = prediction_vector(module, cache, test_idx, labels_by_idx)
+        # The fp32 baseline is scored on the SAME device as the quantised
+        # variants, so the delta between them cannot carry a device difference.
+        module = module.to(QUANTISED_DEVICE)
+        fp32_metrics = macro_f1(module, cache, test_idx, labels_by_idx, data_cfg,
+                                device=QUANTISED_DEVICE)
+        fp32_predictions = prediction_vector(module, cache, test_idx, labels_by_idx,
+                                             device=QUANTISED_DEVICE)
         recorded = recorded_f1.get(arm)
         drift = (
             round(fp32_metrics["f1_macro"] - recorded, 6)
@@ -508,18 +525,43 @@ def main() -> int:
             # module names are prefixed. Compare like with like or coverage
             # reports nothing converted.
             block = coverage(module, getattr(quantised, "inner", quantised))
+            # TWO separate attempts. They used to share one try, so a failure
+            # in the VERIFICATION discarded the MEASUREMENT: an exception while
+            # counting prediction flips set f1 back to None and the row read
+            # "n/a" as though the model could not be scored at all.
+            #
+            # device is pinned to CPU rather than inferred. `predict_logits`
+            # defaults to `next(module.parameters()).device`, which a fully
+            # quantised module cannot answer -- static PTQ leaves no parameters
+            # to ask -- and eager quantised kernels do not run on CUDA anyway.
+            f1 = None
             flips = {}
             try:
-                metrics = macro_f1(quantised, cache, test_idx, labels_by_idx, data_cfg)
+                metrics = macro_f1(quantised, cache, test_idx, labels_by_idx,
+                                   data_cfg, device=QUANTISED_DEVICE)
                 f1 = round(metrics["f1_macro"], 6)
-                flips = prediction_changes(
-                    fp32_predictions,
-                    prediction_vector(quantised, cache, test_idx, labels_by_idx),
-                    classes,
-                )
             except Exception as exc:  # noqa: BLE001
-                f1 = None
-                row["%s_accuracy_failure" % method] = "%s: %s" % (type(exc).__name__, exc)
+                row["%s_accuracy_failure" % method] = "%s: %s" % (
+                    type(exc).__name__, exc)
+                print("  %-13s SCORING FAILED -- %s: %s"
+                      % (method, type(exc).__name__, exc))
+                print("                the size above is real; the accuracy is NOT")
+                print("                missing by choice. This row cannot support a")
+                print("                cost-of-quantisation claim until it is fixed.")
+
+            if f1 is not None:
+                try:
+                    flips = prediction_changes(
+                        fp32_predictions,
+                        prediction_vector(quantised, cache, test_idx, labels_by_idx,
+                                          device=QUANTISED_DEVICE),
+                        classes,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    row["%s_flipcount_failure" % method] = "%s: %s" % (
+                        type(exc).__name__, exc)
+                    print("  %-13s flip count failed -- %s: %s  (macro-F1 above "
+                          "still stands)" % (method, type(exc).__name__, exc))
 
             row.update({
                 "%s_available" % method: True,
@@ -585,6 +627,23 @@ def main() -> int:
               if r.get("static_available") is False]
     for arm, reason in failed:
         print("  static PTQ unavailable for %-20s %s" % (arm, reason))
+
+    unscored = [
+        (r["arm"], method, r.get("%s_accuracy_failure" % method))
+        for r in rows for method in ("dynamic", "static")
+        if r.get("%s_available" % method) and r.get("macro_f1_%s" % method) is None
+    ]
+    if unscored:
+        print()
+        print("  ROWS WITH A SIZE BUT NO ACCURACY -- these cannot support a")
+        print("  cost-of-quantisation claim:")
+        for arm, method, reason in unscored:
+            print("      %-22s %-8s %s" % (arm, method, reason))
+    else:
+        print("\n  Every converted variant was scored. The macro-F1 deltas are")
+        print("  measured, and the prediction-flip counts say how many of the")
+        print("  %d test images each delta rests on." % (rows[0]["n_test_images"]
+                                                          if rows else 0))
     print("\n  Nothing in this table was timed. Any speed claim needs the Pi run.")
 
     stamp = aggregate.provenance(aggregate.cv_records())

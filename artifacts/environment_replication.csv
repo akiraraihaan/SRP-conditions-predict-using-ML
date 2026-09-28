@@ -31,12 +31,12 @@
 # kind=checkpoint_sidecar rows are computed from the registry and from the
 # checkpoint sidecars respectively.
 #
-# built from 264 registry record(s)
+# built from 269 registry record(s)
 # arms: mobilenetv3_small, resnet18, yolo26m, yolo26n, yolo26n_ep50, yolo26s
 # scripts: 01_complete_medium_grid, 01b_uniform_grid, 02_lr_sweep_baselines, 03_run_cv, 03b_contrast, 03c_native_recipe, 04_run_ablation, 05_learning_curve
 # corpus: ['56fdb6c4a723a4a72a5c69fe1d12da738e5983c2', 'f04c12c0922c6597eb139af66ef91e9f8df56b6e']
-# registry sha1: f54363b409c11652
-# generated: 2026-09-28T03:24:28+00:00
+# registry sha1: 7fea41ac63acd8c7
+# generated: 2026-09-28T03:37:11+00:00
 kind,arm,within_session,f1_macro_spread,precision_macro_spread,reproduces_exactly,cause,held_constant,source,repeat,fold,published,rerun,delta
 between_session,mobilenetv3_small,exact,0.019,0.073,False,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
 between_session,resnet18,exact,0.0068,,False,unidentified,"GPU model, torch version, seeds, fold partition","observed across sessions; reported, not recomputed here",,,,,
