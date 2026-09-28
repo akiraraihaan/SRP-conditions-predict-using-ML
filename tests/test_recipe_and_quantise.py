@@ -492,3 +492,160 @@ def test_the_epoch_budget_table_survived_the_rebuild(recipe):
     assert hasattr(recipe, "epoch_budget"), (
         "C1's table is orthogonal to the optimizer collapse and is still owed"
     )
+
+
+# ================================================= static PTQ, end to end
+#
+# Static PTQ failed on all five arms with "too many values to unpack
+# (expected 2)" -- raised after prepare(), so it was our calibration loop, not
+# a platform limitation. FoldDataset yields (tensor, label, idx) and the loop
+# destructured two. It was reported as "static PTQ unavailable", which is how a
+# bug in our code spent a run disguised as a finding about torch.
+#
+# This is the method the microcontroller argument rests on. Dynamic PTQ reaches
+# one Linear layer and cannot support it.
+
+
+def _toy_model():
+    """Two layers with something for each quantisation method to reach: a
+    Conv2d that only static PTQ converts, and a Linear that both do."""
+    import torch
+
+    class Toy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 8, 3, padding=1)
+            self.relu = torch.nn.ReLU()
+            self.pool = torch.nn.AdaptiveAvgPool2d(1)
+            self.fc = torch.nn.Linear(8, 4)
+
+        def forward(self, x):
+            return self.fc(self.pool(self.relu(self.conv(x))).flatten(1))
+
+    return Toy()
+
+
+class _ToyCache:
+    """The ImageCache interface, over deterministic noise."""
+
+    def get(self, idx):
+        import numpy as np
+
+        rng = np.random.default_rng(idx)
+        return (rng.random((16, 16, 3)) * 255).astype("uint8")
+
+
+def test_static_ptq_runs_end_to_end_and_the_result_is_callable(quantise):
+    """prepare -> calibrate -> convert -> forward. A conversion that reports
+    success and then raises at evaluation time is not a success."""
+    torch = pytest.importorskip("torch")
+
+    model = _toy_model().eval()
+    converted, reason = quantise.static_ptq(model, _ToyCache(), list(range(24)),
+                                            {i: i % 4 for i in range(24)})
+
+    assert converted is not None, reason
+    assert "backend=" in reason and "calibration batch" in reason
+
+    out = converted(torch.rand(2, 3, 16, 16))
+    assert tuple(out.shape) == (2, 4)
+
+
+def test_static_ptq_quantises_convolutions(quantise):
+    """The whole reason it exists: dynamic PTQ leaves every Conv2d in fp32."""
+    pytest.importorskip("torch")
+
+    model = _toy_model().eval()
+    converted, reason = quantise.static_ptq(model, _ToyCache(), list(range(24)),
+                                            {i: i % 4 for i in range(24)})
+    assert converted is not None, reason
+
+    block = quantise.coverage(model, getattr(converted, "inner", converted))
+    assert "Conv2d" in block["quantised_layer_types"]
+    assert block["params_quantised_pct"] > 90.0
+
+
+def test_the_calibration_loop_indexes_the_batch(quantise):
+    """FoldDataset yields three items. Destructuring two is what broke it, and
+    a fourth element must not break it again."""
+    import inspect
+
+    source = inspect.getsource(quantise.calibrate)
+    assert "batch[0]" in source
+    assert "for images, _ in" not in source
+    assert "for position, (images, _)" not in source
+
+
+def test_a_failure_names_the_file_it_came_from(quantise, monkeypatch):
+    """Our TypeError reported as a platform limitation is what hid this bug."""
+    torch = pytest.importorskip("torch")
+
+    def explode(*args, **kwargs):
+        raise ValueError("too many values to unpack (expected 2)")
+
+    monkeypatch.setattr(torch.ao.quantization, "convert", explode)
+    result, reason = quantise.static_ptq(_toy_model().eval(), _ToyCache(),
+                                         list(range(8)), {i: 0 for i in range(8)})
+    assert result is None
+    # It names where the exception ACTUALLY came from -- here, this test file,
+    # because that is where the patched function raised. In the real bug it
+    # named 10_quantise.py, which is the point: "ValueError in our calibration
+    # loop" and "static PTQ unsupported on this platform" must not look alike.
+    assert "raised at" in reason
+    assert "test_recipe_and_quantise.py" in reason
+    assert "ValueError" in reason
+
+
+def test_the_stubs_are_what_make_it_runnable(quantise):
+    import inspect
+
+    source = inspect.getsource(quantise._wrap_for_static)
+    assert "QuantStub" in source and "DeQuantStub" in source
+
+
+# ================================================= the delta, checked
+
+
+def test_a_prediction_flip_is_counted_and_named(quantise):
+    import numpy as np
+
+    classes = ["a", "b", "c", "d"]
+    before = np.array([0, 1, 2, 3, 0])
+    after = np.array([0, 2, 2, 3, 0])
+
+    result = quantise.prediction_changes(before, after, classes)
+
+    assert result["n_changed"] == 1
+    assert result["n_predictions"] == 5
+    assert result["pct_changed"] == 20.0
+    assert result["transitions"] == {"b->c": 1}
+    assert result["changed_image_positions"] == [1]
+
+
+def test_identical_predictions_report_zero(quantise):
+    import numpy as np
+
+    before = np.array([0, 1, 2, 3])
+    result = quantise.prediction_changes(before, before, ["a", "b", "c", "d"])
+    assert result["n_changed"] == 0
+    assert result["transitions"] == {}
+
+
+def test_a_score_delta_with_no_flips_is_flagged(quantise):
+    """Two models cannot differ in macro-F1 without differing in output. If
+    that is reported, the quantised model is not the one being evaluated."""
+    source = (REPO_ROOT / "scripts" / "10_quantise.py").read_text(encoding="utf-8")
+    assert "with ZERO" in source
+    assert "not the one" in source
+
+
+def test_one_image_of_134_is_three_quarters_of_a_percent(quantise):
+    """The arithmetic behind reading the flip count: a macro-F1 move of ~0.010
+    on 134 images should be two or three flips, not zero and not thirty."""
+    import numpy as np
+
+    before = np.zeros(134, dtype=int)
+    after = before.copy()
+    after[0] = 1
+    result = quantise.prediction_changes(before, after, ["a", "b"])
+    assert result["pct_changed"] == 0.75

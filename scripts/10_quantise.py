@@ -40,6 +40,7 @@ pre-declared fold whose weights script 03 exported. Not the best fold.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -133,6 +134,44 @@ def coverage(fp32, quantised) -> dict:
     }
 
 
+def prediction_vector(module, cache, indices, labels_by_idx):
+    """The predicted class per image, in the order `indices` was given.
+
+    Metrics are a summary; this is the thing itself. A macro-F1 delta with no
+    prediction change behind it would mean the two models are the same model
+    and the delta came from somewhere else -- which is the possibility this
+    exists to rule out.
+    """
+    from srpcard import evaluate
+
+    _, _, logits = evaluate.predict_logits(module, cache, indices, labels_by_idx)
+    return np.asarray(logits).argmax(axis=1)
+
+
+def prediction_changes(before, after, classes: list[str]) -> dict:
+    """How many predictions moved, and where they went.
+
+    On 134 test images one image is 0.75 %, so a macro-F1 move of 0.010 should
+    correspond to two or three flips. None at all would mean the quantised
+    model is not actually being evaluated; a great many would mean the
+    conversion broke something rather than costing precision.
+    """
+    before = np.asarray(before)
+    after = np.asarray(after)
+    changed = np.flatnonzero(before != after)
+    transitions = {}
+    for position in changed:
+        key = "%s->%s" % (classes[int(before[position])], classes[int(after[position])])
+        transitions[key] = transitions.get(key, 0) + 1
+    return {
+        "n_predictions": int(before.size),
+        "n_changed": int(changed.size),
+        "pct_changed": round(100.0 * changed.size / max(before.size, 1), 2),
+        "changed_image_positions": [int(i) for i in changed],
+        "transitions": dict(sorted(transitions.items(), key=lambda kv: -kv[1])),
+    }
+
+
 def macro_f1(module, cache, indices, labels_by_idx, data_cfg) -> dict:
     from srpcard import evaluate
 
@@ -156,6 +195,66 @@ def dynamic_ptq(module):
         return None, "%s: %s" % (type(exc).__name__, exc)
 
 
+def _wrap_for_static(module):
+    """Wrap a module in quant/dequant stubs.
+
+    Eager-mode static PTQ converts Conv2d and Linear to quantized versions that
+    accept a QUANTIZED tensor. Without a QuantStub the model is still handed a
+    float tensor and the first converted layer raises
+
+        Could not run 'quantized::conv2d' with arguments from the 'CPU' backend
+
+    at evaluation time -- after the conversion has already been reported as a
+    success. The stubs are what make the converted graph runnable.
+    """
+    import torch
+    from torch import nn
+
+    class Wrapped(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.quant = torch.ao.quantization.QuantStub()
+            self.inner = inner
+            self.dequant = torch.ao.quantization.DeQuantStub()
+
+        def forward(self, x):
+            out = self.inner(self.quant(x))
+            while isinstance(out, (tuple, list)):
+                out = out[0]
+            return self.dequant(out)
+
+    return Wrapped(module)
+
+
+def calibrate(prepared, cache, calibration_idx, labels_by_idx,
+              batches: int = CALIBRATION_BATCHES) -> int:
+    """Run the observers over TRAINING images. Returns the batch count.
+
+    FoldDataset yields THREE items -- (tensor, label, idx) -- and unpacking two
+    of them is what made static PTQ fail on all five arms with "too many values
+    to unpack (expected 2)", reported as a platform limitation when it was our
+    own loop. Index the batch rather than destructuring it, so adding a fourth
+    element cannot break this again.
+    """
+    import torch
+    from torch.utils.data import DataLoader
+
+    from srpcard.train import FoldDataset
+
+    loader = DataLoader(
+        FoldDataset(cache, calibration_idx, labels_by_idx),
+        batch_size=8, shuffle=False,
+    )
+    seen = 0
+    with torch.no_grad():
+        for batch in loader:
+            if seen >= batches:
+                break
+            prepared(batch[0])
+            seen += 1
+    return seen
+
+
 def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
     """Fuse, calibrate on TRAINING images, convert. Conv2d included.
 
@@ -163,20 +262,17 @@ def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
     rather than skipped: "static PTQ is not available for this architecture" is
     itself a finding the manuscript needs, and a silent skip would read as a
     method that was never tried.
+
+    The reason NAMES THE SOURCE FILE of the failure. Reporting our own
+    TypeError as though it were a platform limitation is how a broken
+    calibration loop looked like "static PTQ unsupported" on all five arms.
     """
     import copy
+    import traceback
 
     import torch
 
     try:
-        prepared = copy.deepcopy(module).eval()
-
-        # Preference order, then ANY engine the build offers. Naming only
-        # fbgemm and qnnpack looked reasonable and was wrong: torch 2.12.0+cpu
-        # ships with `supported_engines == ["onednn"]`, so a hardcoded pair
-        # would have reported "static PTQ unavailable" on a machine that
-        # supports it perfectly well -- a false negative in the one table the
-        # microcontroller argument rests on.
         available = [e for e in torch.backends.quantized.supported_engines
                      if e != "none"]
         backend = next(
@@ -189,41 +285,31 @@ def static_ptq(module, cache, calibration_idx, labels_by_idx):  # noqa: C901
                           % list(torch.backends.quantized.supported_engines))
         torch.backends.quantized.engine = backend
 
-        # Fuse where the architecture allows it. torch.ao.quantization.fuse_modules
-        # needs explicit patterns per architecture, so the generic path is used
-        # and the failure -- if any -- is reported rather than guessed around.
-        try:
-            prepared = torch.ao.quantization.fuse_modules(prepared, [], inplace=False)
-        except Exception:      # noqa: BLE001 - fusion is an optimisation, not a requirement
-            pass
+        prepared = _wrap_for_static(copy.deepcopy(module).eval()).eval()
+
+        # Fusion is an OPTIMISATION here, not a requirement: fuse_modules needs
+        # explicit per-architecture patterns and there is no generic list that
+        # is correct for all five arms. Conv2d is quantised either way; fusion
+        # would only fold BatchNorm in as well.
+        fused = False
 
         prepared.qconfig = torch.ao.quantization.get_default_qconfig(backend)
         torch.ao.quantization.prepare(prepared, inplace=True)
 
-        # Calibration sees exactly what evaluation sees: FoldDataset applies the
-        # same normalisation, so the observed activation ranges are the ranges
-        # the quantised model will actually meet.
-        from torch.utils.data import DataLoader
-
-        from srpcard.train import FoldDataset
-
-        loader = DataLoader(
-            FoldDataset(cache, calibration_idx, labels_by_idx),
-            batch_size=8, shuffle=False,
-        )
-        with torch.no_grad():
-            for position, (images, _) in enumerate(loader):
-                if position >= CALIBRATION_BATCHES:
-                    break
-                prepared(images)
+        batches = calibrate(prepared, cache, calibration_idx, labels_by_idx)
+        if not batches:
+            return None, "calibration produced no batches"
 
         converted = torch.ao.quantization.convert(prepared, inplace=False)
-        return converted, "backend=%s" % backend
+        return converted, "backend=%s, %d calibration batch(es), fused=%s" % (
+            backend, batches, fused
+        )
     except Exception as exc:  # noqa: BLE001
-        return None, "%s: %s" % (type(exc).__name__, exc)
+        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        return None, "%s: %s  [raised at %s:%d]" % (
+            type(exc).__name__, exc, Path(frame.filename).name, frame.lineno
+        )
 
-
-# --------------------------------------------------------------------------
 
 ENVIRONMENT_NOTE = """
   THE ACCURACY COLUMN IS INTERNALLY CONSISTENT, NOT A REPRODUCTION.
@@ -371,6 +457,7 @@ def main() -> int:
         # registry's value is shown beside it for context and is NEVER used as
         # the baseline: see the note below.
         fp32_metrics = macro_f1(module, cache, test_idx, labels_by_idx, data_cfg)
+        fp32_predictions = prediction_vector(module, cache, test_idx, labels_by_idx)
         recorded = recorded_f1.get(arm)
         drift = (
             round(fp32_metrics["f1_macro"] - recorded, 6)
@@ -417,10 +504,19 @@ def main() -> int:
                 continue
 
             size = state_dict_size_mb(quantised, scratch)
-            block = coverage(module, quantised)
+            # Static PTQ returns the model inside quant/dequant stubs, so the
+            # module names are prefixed. Compare like with like or coverage
+            # reports nothing converted.
+            block = coverage(module, getattr(quantised, "inner", quantised))
+            flips = {}
             try:
                 metrics = macro_f1(quantised, cache, test_idx, labels_by_idx, data_cfg)
                 f1 = round(metrics["f1_macro"], 6)
+                flips = prediction_changes(
+                    fp32_predictions,
+                    prediction_vector(quantised, cache, test_idx, labels_by_idx),
+                    classes,
+                )
             except Exception as exc:  # noqa: BLE001
                 f1 = None
                 row["%s_accuracy_failure" % method] = "%s: %s" % (type(exc).__name__, exc)
@@ -440,12 +536,34 @@ def main() -> int:
                     round(f1 - row["macro_f1_fp32"], 6) if f1 is not None else None
                 ),
                 "under_flash_budget_%s" % method: bool(size <= FLASH_BUDGET_MB),
+                # The delta, checked against the thing it is a summary of.
+                "n_predictions_changed_%s" % method: flips.get("n_changed"),
+                "pct_predictions_changed_%s" % method: flips.get("pct_changed"),
+                "prediction_transitions_%s" % method: json.dumps(
+                    flips.get("transitions", {})
+                ),
             })
             print("  %-13s %8.3f MB   ratio %5.3f   %5.1f %% of params   macro-F1 %s"
                   % (method, size, size / fp32_size if fp32_size else float("nan"),
                      block["params_quantised_pct"] or 0.0,
                      "%.4f" % f1 if f1 is not None else "n/a"))
             print("                %s" % (row["quantised_layers_%s" % method]))
+            if flips:
+                delta = row["macro_f1_delta_%s" % method]
+                print("                %d of %d prediction(s) changed (%.2f %%)%s"
+                      % (flips["n_changed"], flips["n_predictions"],
+                         flips["pct_changed"],
+                         "  <- " + ", ".join(
+                             "%s x%d" % (k, v)
+                             for k, v in list(flips["transitions"].items())[:4])
+                         if flips["transitions"] else ""))
+                if delta and flips["n_changed"] == 0:
+                    print("                [WARNING] macro-F1 moved by %+0.4f with ZERO"
+                          % delta)
+                    print("                prediction changes. The two models cannot")
+                    print("                differ in score without differing in output:")
+                    print("                the quantised model is probably not the one")
+                    print("                being evaluated.")
 
         rows.append(row)
 

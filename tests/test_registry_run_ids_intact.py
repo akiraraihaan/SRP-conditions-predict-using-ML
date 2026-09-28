@@ -54,14 +54,30 @@ def identity_extra_candidates(record: dict) -> list:
         return ["lr_sweep"]
     if script == "05_learning_curve":
         return ["lc_frac%.2f" % extra["fraction"]] if "fraction" in extra else []
+    if script == "03b_contrast":
+        return [None]                    # 03 hashes extra as None
+    if script == "03c_native_recipe":
+        return ["native_recipe"]
     return [None]
 
 
 def recompute(record: dict, extra) -> str:
-    fields = {
-        key: (extra if key == "extra" else record.get(key))
-        for key in registry.RUN_ID_FIELDS
-    }
+    """The identity fields as the run that wrote this record supplied them.
+
+    `optimizer` needs care. It entered RUN_ID_FIELDS as an OVERRIDE, and the
+    top-level `optimizer` field -- which holds the EFFECTIVE optimizer -- was
+    added later still, so for any record written before that it is absent. The
+    override that was actually hashed lives in extra.run_id_optimizer.
+    """
+    stored_extra = record.get("extra") or {}
+    fields = {}
+    for key in registry.RUN_ID_FIELDS:
+        if key == "extra":
+            fields[key] = extra
+        elif key == "optimizer":
+            fields[key] = stored_extra.get("run_id_optimizer")
+        else:
+            fields[key] = record.get(key)
     return registry.compute_run_id(**fields)
 
 
@@ -140,8 +156,8 @@ def test_the_recorded_extra_does_not_reproduce_the_hash(records):
 def test_the_registry_is_the_expected_size(records):
     """A tripwire: if this number changes, every count in the manuscript and in
     the tests above is describing a different registry."""
-    assert len(records) == 234, (
-        "registry holds %d records, not 234. If runs were added deliberately, "
+    assert len(records) == 264, (
+        "registry holds %d records, not 264. If runs were added deliberately, "
         "update this number and check every count that depends on it."
         % len(records)
     )

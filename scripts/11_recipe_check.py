@@ -428,6 +428,31 @@ def print_native_recipe(frame: pd.DataFrame) -> None:
         return
 
     first = frame.iloc[0]
+
+    # A run made before 03c captured the recipe has none of these fields. That
+    # is a GAP, and printing "augmentation: none" for it would state a finding
+    # the run never produced -- the same mistake as quoting a documented default
+    # that was not in force.
+    captured = [c for c in frame.columns if c.startswith(("aug_", "sched_"))]
+    if not captured and not first.get("optimizer_used"):
+        print("  NO RECIPE WAS CAPTURED for these records.")
+        print()
+        print("  They were produced by a version of 03c_native_recipe.py that did")
+        print("  not read the trainer's settings back. The augmentation, schedule")
+        print("  and optimizer are therefore UNKNOWN -- not 'none', and not the")
+        print("  documented defaults, which may not have been in force.")
+        print()
+        print("  The macro-F1 in Table 1 is unaffected: it was measured with our")
+        print("  metric code on our test partition either way. Only the")
+        print("  DESCRIPTION of the recipe is missing.")
+        print()
+        print("  To capture it, re-run:")
+        print("    python scripts/03c_native_recipe.py --data-root $DATA_ROOT")
+        print("  The run_ids are unchanged, so it will report 'already complete'.")
+        print("  Delete the 5 03c_native_recipe lines from the registry first, or")
+        print("  accept the gap -- your call; this script will not touch it.")
+        return
+
     print("  optimizer requested : %s" % first.get("optimizer_requested"))
     print("  optimizer that ran  : %s" % first.get("optimizer_used"))
     print("  epochs run          : %s" % first.get("epochs_run"))
@@ -647,14 +672,34 @@ def main() -> int:
                 saturating = int(hit.iloc[0]["folds_at_or_above_96pct"])
                 total = int(hit.iloc[0]["n_folds"])
                 print()
+                gain = budget[budget["arm_b"] == "yolo26n"]
+                gained = float(gain.iloc[0]["mean_diff"]) if not gain.empty else None
+                excludes = (bool(gain.iloc[0]["corrected_excludes_zero"])
+                            if not gain.empty else None)
+
+                print()
                 if saturating >= 5:
-                    print("  ep50 STILL saturates its budget in %d of %d folds, so '25 was"
+                    print("  ep50 STILL saturates in %d of %d folds, so '25 was too few'"
                           % (saturating, total))
-                    print("  too few' does not explain it -- the arm wants more than 50 too.")
+                    print("  does not explain it -- the arm wants more than 50 as well.")
                 else:
-                    print("  ep50 does NOT saturate (%d of %d folds at >= 96 %%), so 25"
+                    print("  SATURATION: ep50 no longer saturates (%d of %d folds at"
                           % (saturating, total))
-                    print("  epochs was genuinely constraining.")
+                    print("  >= 96 %, against 9 of 15 for nano at 25), so 25 WAS a")
+                    print("  binding budget.")
+
+                if gained is not None:
+                    print()
+                    print("  ACCURACY: and it bought %+0.4f, interval %s zero."
+                          % (gained, "excluding" if excludes else "spanning"))
+                    if not excludes:
+                        print()
+                        print("  THESE ARE DIFFERENT ANSWERS AND BOTH BELONG IN THE PAPER.")
+                        print("  The budget was genuinely binding at 25 -- and lifting it")
+                        print("  changes nothing measurable. So 'YOLO26 was stopped early'")
+                        print("  is true about the budget and false as an explanation of")
+                        print("  the deficit. Saturation is not evidence of a deficit's")
+                        print("  cause; it only says the budget was reached.")
 
     # ---- the native recipe
     rule("THE NATIVE RECIPE, read back from the trainer")
