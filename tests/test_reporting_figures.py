@@ -469,7 +469,7 @@ def test_no_arm_name_is_hardcoded_in_a_figure_title():
     """The defect class, not just the one instance."""
     source = (REPO_ROOT / "src" / "srpcard" / "figures.py").read_text(encoding="utf-8")
     for line in source.splitlines():
-        if "set_title(" in line or ("ax.set_title" in line):
+        if "set_title(" in line or "_title(" in line:
             for arm in ("yolo26n", "yolo26s", "yolo26m", "resnet18", "mobilenetv3_small"):
                 assert arm not in line, (
                     "figure title hardcodes an arm name, which survives a "

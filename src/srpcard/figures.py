@@ -52,6 +52,44 @@ PROVENANCE: dict | None = None
 # later -- so the two are separated rather than one being traded for the other.
 RENDER_PROVENANCE: bool = True
 
+# Whether figures carry a title INSIDE the plot. A journal wants the description
+# in the caption only; the default keeps titles so a working figure still says
+# what it is when opened on its own.
+RENDER_TITLES: bool = True
+
+# Arm identifiers are registry keys, not names a reader knows. Every figure label
+# that names an architecture goes through display_name(), so the figure agrees
+# with the manuscript text. Filenames keep the identifier.
+DISPLAY_NAMES: dict[str, str] = {
+    "mobilenetv3_small": "MobileNetV3-Small",
+    "resnet18":          "ResNet18",
+    "yolo26n":           "YOLO26n-cls",
+    "yolo26s":           "YOLO26s-cls",
+    "yolo26m":           "YOLO26m-cls",
+    "yolo26n_ep50":      "YOLO26n-cls (50 epochs)",
+}
+
+
+def display_name(arm: str, *, wrap: bool = False) -> str:
+    """Nama arsitektur untuk dibaca manusia; identifier apa adanya kalau tak dikenal.
+
+    wrap=True memecah nama panjang jadi dua baris, untuk label tick boxplot yang
+    ruang horizontalnya sempit: di spasi sebelum keterangan dalam kurung kalau
+    ada, kalau tidak di tanda hubung terakhir. Dipisahkan dari bentuk satu baris
+    karena anotasi scatter dan judul tidak boleh ikut terpecah.
+    """
+    name = DISPLAY_NAMES.get(arm, arm)
+    if wrap and len(name) > 12:
+        # the parenthetical first: rpartition("-") on "YOLO26n-cls (50 epochs)"
+        # would split the architecture name itself, "YOLO26n-" / "cls (50 epochs)"
+        head, sep, tail = name.partition(" (")
+        if sep:
+            return "%s\n(%s" % (head, tail)
+        if "-" in name:
+            head, _, tail = name.rpartition("-")
+            return "%s-\n%s" % (head, tail)
+    return name
+
 
 def set_provenance(block: dict | None) -> None:
     """Install the stamp every subsequent save() applies."""
@@ -63,6 +101,17 @@ def set_render_provenance(enabled: bool) -> None:
     """Draw the provenance strip on the figure, or keep it to the metadata only."""
     global RENDER_PROVENANCE
     RENDER_PROVENANCE = bool(enabled)
+
+
+def set_render_titles(enabled: bool) -> None:
+    """Gambar judul di dalam plot, atau serahkan sepenuhnya ke caption naskah."""
+    global RENDER_TITLES
+    RENDER_TITLES = bool(enabled)
+
+
+def _title(ax, text: str) -> None:
+    if RENDER_TITLES:
+        ax.set_title(text)
 
 
 @contextmanager
@@ -215,7 +264,7 @@ def figure_class_distribution(index, data_cfg: dict[str, Any], out_dir: Path) ->
     ax.set_xticks(positions)
     ax.set_xticklabels([c.replace("_", " ") for c in classes], rotation=40, ha="right")
     ax.set_ylabel("images")
-    ax.set_title("Class distribution before and after duplicate-label exclusion")
+    _title(ax, "Class distribution before and after duplicate-label exclusion")
     ax.legend()
     return save(fig, out_dir, "fig_class_distribution")
 
@@ -229,12 +278,12 @@ def figure_cv_boxplot(records: list[dict], out_dir: Path) -> list[Path]:
     data = [[r["f1_macro"] for r in records if r["arm"] == arm] for arm in arms]
 
     fig, ax = plt.subplots(figsize=(6.4, 3.6))
-    ax.boxplot(data, tick_labels=[a.replace("_", "\n") for a in arms], showmeans=True)
+    ax.boxplot(data, tick_labels=[display_name(a, wrap=True) for a in arms], showmeans=True)
     for position, values in enumerate(data, start=1):
         jitter = np.random.default_rng(0).normal(0, 0.045, len(values))
         ax.plot(position + jitter, values, ".", alpha=0.5, markersize=4)
     ax.set_ylabel("test macro-F1")
-    ax.set_title("Cross-validated macro-F1 by architecture (5x3 folds)")
+    _title(ax, "Cross-validated macro-F1 by architecture (5x3 folds)")
     return save(fig, out_dir, "fig_cv_macro_f1")
 
 
@@ -252,7 +301,7 @@ def figure_pareto(summary, out_dir: Path) -> list[Path]:
 
     ax.errorbar(x, y, yerr=err, fmt="o", capsize=3, markersize=6)
     for xi, yi, name in zip(x, y, names):
-        ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(6, 4), fontsize=8)
+        ax.annotate(display_name(name), (xi, yi), textcoords="offset points", xytext=(6, 4), fontsize=8)
 
     # Pareto: no other point has both lower GFLOPs and higher macro-F1
     optimal = [
@@ -273,7 +322,7 @@ def figure_pareto(summary, out_dir: Path) -> list[Path]:
 
     ax.set_xlabel("GFLOPs per inference")
     ax.set_ylabel("test macro-F1 (mean $\\pm$ s.d. over 15 folds)")
-    ax.set_title("Accuracy against computational cost")
+    _title(ax, "Accuracy against computational cost")
     return save(fig, out_dir, "fig_pareto")
 
 
@@ -300,7 +349,7 @@ def figure_pareto_size(summary, out_dir: Path) -> list[Path]:
 
     ax.errorbar(x, y, yerr=err, fmt="o", capsize=3, markersize=6)
     for xi, yi, name in zip(x, y, names):
-        ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(6, 4), fontsize=8)
+        ax.annotate(display_name(name), (xi, yi), textcoords="offset points", xytext=(6, 4), fontsize=8)
 
     optimal = [
         i
@@ -320,7 +369,7 @@ def figure_pareto_size(summary, out_dir: Path) -> list[Path]:
 
     ax.set_xlabel("model size (MB, fp16 weights as deployed)")
     ax.set_ylabel("test macro-F1 (mean $\\pm$ s.d. over 15 folds)")
-    ax.set_title("Accuracy against model size")
+    _title(ax, "Accuracy against model size")
     return save(fig, out_dir, "fig_pareto_size")
 
 
@@ -341,7 +390,7 @@ def figure_confusion(matrix, classes, out_dir: Path, name: str, title: str) -> l
     ax.set_yticklabels([c.replace("_", " ") for c in classes])
     ax.set_xlabel("predicted")
     ax.set_ylabel("true")
-    ax.set_title(title)
+    _title(ax, title)
     ax.grid(False)
 
     threshold = 0.55
@@ -388,8 +437,9 @@ def figure_learning_curve(summary, out_dir: Path, arm: str | None = None) -> lis
     # captioned the wrong model while the numbers underneath were correct.
     # artifacts/learning_curve.csv carries no arm column, which is why nothing
     # caught it; the caller reads it from the registry instead.
-    ax.set_title(
-        "Learning curve under the locked %s configuration" % arm
+    _title(
+        ax,
+        "Learning curve under the locked %s configuration" % display_name(arm)
         if arm else "Learning curve under the locked configuration"
     )
     return save(fig, out_dir, "fig_learning_curve")
@@ -413,7 +463,7 @@ def figure_ablation(paired, per_class, out_dir: Path) -> list[Path]:
     ax.set_xticks(range(len(deltas)))
     ax.set_xticklabels(labels, rotation=90, fontsize=7)
     ax.set_ylabel("macro-F1: weighted $-$ unweighted")
-    ax.set_title("Paired per-fold difference")
+    _title(ax, "Paired per-fold difference")
     ax.legend()
 
     ax = axes[1]
@@ -429,7 +479,7 @@ def figure_ablation(paired, per_class, out_dir: Path) -> list[Path]:
     )
     ax.invert_yaxis()
     ax.set_xlabel("recall: weighted $-$ unweighted")
-    ax.set_title("Per-class recall delta (rarest class first)")
+    _title(ax, "Per-class recall delta (rarest class first)")
 
     fig.tight_layout()
     return save(fig, out_dir, "fig_ablation")
@@ -490,10 +540,11 @@ def figure_taxonomy_pairs(pairs, arm: str, out_dir: Path) -> list[Path]:
     ax.set_ylim(-0.7, len(values) - 0.3)
     ax.set_xlim(left=min(baseline, values.min()) - 0.004)
     ax.set_xlabel("macro-F1 after merging the pair (mean over 15 folds)")
-    ax.set_title(
+    _title(
+        ax,
         "Every possible single-pair merge, %s\n"
         "the four-class error family occupies the top of the ranking"
-        % arm.replace("_", " ")
+        % display_name(arm)
     )
 
     from matplotlib.patches import Patch
@@ -520,11 +571,11 @@ def figure_selected_epochs(epochs, out_dir: Path) -> list[Path]:
     arms = sorted(epochs["arm"].unique())
     fig, ax = plt.subplots(figsize=(6.4, 3.4))
     data = [epochs.loc[epochs["arm"] == arm, "fraction_of_budget"].to_numpy() for arm in arms]
-    ax.boxplot(data, tick_labels=[a.replace("_", "\n") for a in arms], showmeans=True)
+    ax.boxplot(data, tick_labels=[display_name(a, wrap=True) for a in arms], showmeans=True)
     ax.axhline(1.0, linestyle="--", linewidth=1, color="tab:red",
                label="epoch budget exhausted")
     ax.set_ylabel("selected epoch / epoch budget")
     ax.set_ylim(0, 1.08)
-    ax.set_title("Where best-weight selection landed")
+    _title(ax, "Where best-weight selection landed")
     ax.legend()
     return save(fig, out_dir, "fig_selected_epochs")

@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd  # noqa: E402
 
 from srpcard import aggregate, figures  # noqa: E402
+from srpcard.figures import display_name  # noqa: E402
 from srpcard import data as srp_data  # noqa: E402
 from srpcard.config import artifacts_dir, load_arms_config, load_data_config  # noqa: E402
 from srpcard.registry import load_registry  # noqa: E402
@@ -151,6 +152,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     figures.set_render_provenance(not args.for_publication)
+    figures.set_render_titles(not args.for_publication)
 
     rule("06 -- publication figures")
     print("[out] %s" % out_dir)
@@ -282,7 +284,7 @@ def main() -> int:
                     # be mistaken for another model's is worse than none
                     "fig_confusion_%s" % arm,
                     "Confusion matrix, %s (%s) -- %d predictions %s"
-                    % (arm, role, total, note),
+                    % (display_name(arm), role, total, note),
                 )
                 print(
                     "[fig] confusion matrix (%s, %s): %d predictions, %s"
